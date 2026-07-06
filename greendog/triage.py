@@ -152,6 +152,17 @@ def _classify_pr(
             "reasons": {}, "claimed_by": sorted(claimed),
         }
 
+    # A PR authored by someone who can merge it themselves isn't waiting on the
+    # triage rotation — they own it and can land it.  Surfaced as its own bucket
+    # (not folded into mark_triaged) since a maintainer can't approve their own
+    # PR, so it may still want a reviewer; --apply leaves these alone.
+    if author and can_merge(author, files):
+        return {
+            "number": pr["number"], "title": pr["title"], "author": author,
+            "verdict": "maintainer_authored", "on_the_hook": [],
+            "add_reviewers": [], "reasons": {}, "claimed_by": [],
+        }
+
     # Per candidate user (non-author, non-bot): what signals do they have?
     left_substantive: set[str] = set()  # real review or non-bot-command comment
     left_any: set[str] = set()          # any review or comment (incl bot cmd)
@@ -248,6 +259,7 @@ def cmd_triage(args) -> None:
     mt = [r for r in results if r["verdict"] == "mark_triaged"]
     nt = [r for r in results if r["verdict"] == "needs_triage"]
     cl = [r for r in results if r["verdict"] == "claimed"]
+    ma = [r for r in results if r["verdict"] == "maintainer_authored"]
 
     print(f"\n## mark_triaged ({len(mt)}) — maintainer already engaged")
     for r in sorted(mt, key=lambda x: x["number"]):
@@ -255,6 +267,11 @@ def cmd_triage(args) -> None:
         add = f"  +reviewer {','.join(r['add_reviewers'])}" if r["add_reviewers"] else ""
         print(f"  #{r['number']}  {hook}{add}")
         print(f"      {r['title'][:80]}")
+
+    if ma:
+        print(f"\n## maintainer_authored ({len(ma)}) — author can merge it themselves, not auto-labeled")
+        for r in sorted(ma, key=lambda x: x["number"]):
+            print(f"  #{r['number']}  by {r['author']}  {r['title'][:60]}")
 
     if cl:
         print(f"\n## claimed ({len(cl)}) — labeled for landing, left alone")
