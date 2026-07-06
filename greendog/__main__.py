@@ -14,6 +14,7 @@ from .diff import render_diff
 from .fetch import collect
 from .report import render
 from .triage import cmd_triage
+from .suggest import cmd_suggest
 
 RUNS_DIR = PROJECT_ROOT / "runs"
 
@@ -114,6 +115,19 @@ def main():
     )
     p_triage.add_argument("--raw", action="store_true", help="output raw JSON verdicts")
     p_triage.set_defaults(func=cmd_triage)
+
+    p_suggest = sub.add_parser(
+        "suggest", help="suggest a reviewer for a PR from git history of changed lines"
+    )
+    p_suggest.add_argument("number", type=int, help="PR number")
+    p_suggest.add_argument(
+        "--pytorch-dir", help="path to local pytorch checkout "
+        "(default: $GREENDOG_PYTORCH_DIR or ~/Dev/pytorch)",
+    )
+    p_suggest.add_argument(
+        "--apply", action="store_true", help="add the suggested reviewer to the PR",
+    )
+    p_suggest.set_defaults(func=cmd_suggest)
 
     args = ap.parse_args()
     args.func(args)

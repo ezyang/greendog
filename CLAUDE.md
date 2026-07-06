@@ -438,3 +438,48 @@ fan out over chunks, apply the rubric), and the LLM verdicts agreed
 exactly with the deterministic scan. Keep the subagent-workflow pattern
 in reserve for the *later* triage steps (beyond "is someone engaged?")
 that need real judgment; those are not yet built.
+
+### Suggesting a reviewer (for tricky PRs)
+
+Beyond "is someone engaged?", the next triage step is: for a PR nobody
+has picked up, name the person best placed to review it. `greendog
+suggest <n>` (see `greendog/suggest.py`) does this from git history —
+specifically, it blames the EXACT line-ranges the PR changes (parsed from
+`gh pr diff` hunk headers, mapped to old-file ranges), aggregates the
+authors by GitHub login, and picks the dominant non-author owner.
+
+The design deliberately only fires when the PR is *tricky enough* to be
+worth taking off the triager's plate — "tricky" being operationalized as
+"there is a clear code owner," not a churn/size metric:
+
+- Only **core** files count (`torch/`, `aten/`, `c10/`, `functorch/`;
+  tests/docs/CI excluded). A docs-only or test-only PR → no suggestion,
+  left for the triager.
+- A **clear owner** must have written ≥50% of the blamed core lines
+  (`OWNER_SHARE_THRESHOLD`; loose gate per Edward — size-agnostic).
+- The owner must have **repeat history**: ≥`MIN_OWNER_COMMITS` (2)
+  distinct commits touching the changed files, so we name genuine area
+  experts, not someone who edited a line once incidentally.
+- Need ≥`MIN_BLAMED_LINES` (4) attributable lines — pure insertions blame
+  to nothing, so a PR that only *adds* code yields no signal.
+
+Key gotchas learned building this:
+- **Blame gives emails, not logins, and people commit under several
+  emails** (`@fb.com`, `@meta.com`, ghstack noise). Aggregate by resolved
+  GitHub login (`email → login` via a commit under that email +
+  `gh api .../commits/<sha> --jq .author.login`), not by raw email — else
+  the same person's lines split and no owner clears the threshold.
+- **`git log --author=<email>` under-counts** because the landed commit's
+  author email often differs from the `git config user.email`. Count
+  file-touching commits by matching the blame-derived email(s) in
+  `git log --format=%H\ %ae -- <path>` instead.
+- Requires a **local pytorch checkout** for blame/log
+  (`--pytorch-dir`, `$GREENDOG_PYTORCH_DIR`, default `~/Dev/pytorch`);
+  its `.git` is a worktree *file*, so probe with `git rev-parse
+  --is-inside-work-tree`, not `os.path.isdir(".git")`.
+
+`greendog suggest <n>` prints the suggestion (owner, share, lines,
+commits) as a dry-run; `--apply` adds them via `gh pr edit --add-reviewer`
+(skips if they're already a reviewer). Validated on PR #188996 (FP8
+blockwise scaling fix): blames 26/26 changed lines to `jananisriram`, who
+introduced blockwise FP8 scaling in Inductor — assigned as reviewer.
