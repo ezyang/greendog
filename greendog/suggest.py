@@ -220,6 +220,26 @@ def _current_reviewers(number: int) -> list[str]:
     return [r for r in out.split(",") if r]
 
 
+def _is_collaborator(login: str) -> bool:
+    """Whether `login` can be requested as a reviewer (repo collaborator).
+
+    Review requests only work for collaborators; the git-history owner may be a
+    past contributor who no longer is one, so check before trying to add.
+    """
+    r = _run(["gh", "api", f"repos/{REPO}/collaborators/{login}",
+              "--silent"])
+    return r.returncode == 0
+
+
+def _add_reviewer(number: int, login: str) -> tuple[bool, str]:
+    """Request `login` as reviewer via REST (surfaces a real error, unlike
+    `gh pr edit`, which exits 0 even when GitHub rejects the request)."""
+    r = _run(["gh", "api", "-X", "POST",
+              f"repos/{REPO}/pulls/{number}/requested_reviewers",
+              "-f", f"reviewers[]={login}"])
+    return r.returncode == 0, (r.stderr or "").strip()
+
+
 def cmd_suggest(args) -> None:
     pytorch_dir = args.pytorch_dir or _default_pytorch_dir()
     check = _run(["git", "rev-parse", "--is-inside-work-tree"], cwd=pytorch_dir)
@@ -246,13 +266,16 @@ def cmd_suggest(args) -> None:
     if s["reviewer"] in existing:
         print("  → already a reviewer; nothing to do.")
         return
+    if not _is_collaborator(s["reviewer"]):
+        print(f"  → {s['reviewer']} is not a pytorch/pytorch collaborator and "
+              "cannot be requested as a reviewer; leaving for the triager.")
+        return
     if not args.apply:
         print("  [dry-run] re-run with --apply to add this reviewer.")
         return
-    r = _run(["gh", "pr", "edit", str(args.number), "--repo", REPO,
-              "--add-reviewer", s["reviewer"]])
-    if r.returncode == 0:
+    ok, err = _add_reviewer(s["number"], s["reviewer"])
+    if ok:
         print(f"  → added {s['reviewer']} as reviewer.")
     else:
-        print(f"  → FAILED to add reviewer: {r.stderr.strip()}", file=sys.stderr)
+        print(f"  → FAILED to add reviewer: {err}", file=sys.stderr)
 
