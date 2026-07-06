@@ -328,33 +328,51 @@ Then pull per-PR detail with
 
 ### Step 1: "is a maintainer already engaged?"
 
-The first (and currently only) triage step: if someone with merge/review
-rights is ALREADY engaged on the PR, we can just bulk-mark it `triaged`
-— a human is on the hook, so it isn't stuck.
+The first (and currently only) triage step: if someone with merge rights
+is ALREADY engaged on the PR, we can just bulk-mark it `triaged` — a
+human is on the hook, so it isn't stuck.
 
-**The signal is `authorAssociation`** on comments and reviews:
-- `MEMBER` or `COLLABORATOR` = has merge/review rights (a "maintainer").
-- `CONTRIBUTOR` / `NONE` = outside contributor or passerby — does NOT count.
+**Merge rights come from the repo permission API, not `authorAssociation`.**
+`gh api repos/pytorch/pytorch/collaborators/<user>/permission` returns
+`admin` / `write` / `maintain` / `read` / `none`; only `admin`/`write`/
+`maintain` confer merge rights. `authorAssociation` (MEMBER/COLLABORATOR
+on a comment) OVER-counts: e.g. bohnstingl and ZhaoqiongZ show
+`COLLABORATOR` but only have `read`. Always gate on the permission API.
 
-Rules for deciding a maintainer is engaged (→ `mark_triaged`):
-- Count a comment/review only if its author is `MEMBER`/`COLLABORATOR`,
-  is NOT the PR author (authors defending their own PR don't count even
-  if they're maintainers), and is NOT a bot (`claude`, `pytorch-bot`,
-  `pytorchmergebot`, `pytorchbot`, `facebook-github-bot`, `*bot`).
-- A real review (CHANGES_REQUESTED / COMMENTED / APPROVED) or a
-  substantive comment (design discussion, questions, requesting changes)
-  counts.
-- A maintainer merely LISTED in `reviewRequests` but who never
-  commented/reviewed does NOT count as engaged.
-- **Mechanical drive-bys don't count.** `@pytorchbot fix-lint` and
-  similar bot-command comments are not real engagement — mark such PRs
-  `uncertain`, not triaged.
+A PR hits the bar (→ `mark_triaged`) when a person with merge rights who
+is NOT the PR author and NOT a bot (`claude`, `pytorch-bot`,
+`pytorchmergebot`, `pytorchbot`, `facebook-github-bot`, `*bot`):
+
+1. **left a substantive review or comment** — any real review state
+   (CHANGES_REQUESTED / COMMENTED / APPROVED) or a substantive comment
+   (design discussion, questions, requesting changes); OR
+2. **is a requested reviewer AND left any comment at all** — even a
+   mechanical bot command like `@claude review this please`. Commenting
+   while assigned as reviewer is evidence they've accepted the review
+   (this is the PR-188976 case: Richard/zou3519 was a reviewer and
+   commented); OR
+3. **was MANUALLY assigned as a reviewer by someone other than the
+   author** — a real triage action, counts even if they haven't
+   commented yet. If it's an easy PR you may still want to look
+   personally to help move it along.
+
+What does NOT count:
+- **Codeowner / author auto-assignment.** A silent reviewer who was
+  auto-added (the `review_requested` timeline event's `actor` is the PR
+  author, added in a batch at open) is NOT evidence of acceptance.
+  Criterion 3 requires a non-author, non-bot assigner. Distinguish the
+  two via `gh api repos/pytorch/pytorch/issues/<n>/timeline` and reading
+  the `actor` on each `review_requested` event.
+- **Mechanical drive-bys by a non-reviewer.** `@pytorchbot fix-lint` or
+  `@claude review ...` from someone who is NOT a requested reviewer is
+  not engagement (see the jansel note below). These only count under
+  criterion 2, i.e. when the commenter is also a reviewer.
 - **jansel's `@claude review these changes` is NOT ownership.** Jason
   Ansel runs bot automation that leaves `@claude review these changes`
   on OSS PRs to help unstick CI; per direct agreement with him this does
   NOT mean he's signed up to review or land the PR. Do not mark such PRs
-  triaged on that basis alone, and do not add him as a reviewer for it.
-  (If he leaves a real human review, that counts normally.)
+  triaged on that basis alone (unless he's also a reviewer → criterion 2,
+  or left a real human review → criterion 1).
 
 ### Step 2: on-the-hook people must actually be reviewers
 
@@ -382,16 +400,22 @@ automation entirely.)
 ### Workflow implementation note
 
 Step 1 is implemented deterministically as `greendog triage` (see
-`greendog/triage.py`) — no LLM needed, because the engagement signal is
-purely GitHub's `authorAssociation`.  `greendog triage` prints a dry-run
-table; `greendog triage --apply` labels the `mark_triaged` PRs and adds
-the engaged maintainer as a reviewer where missing.  The module encodes
-the caveats above as data (`BOT_COMMAND_PREFIXES`, `CLAIMED_LABELS`).
+`greendog/triage.py`) — no LLM needed. It encodes the three criteria and
+their exclusions as code: merge rights via the permission API (cached
+per user), the three engagement criteria in `_classify_pr`, the
+bot-command filter (`BOT_COMMAND_PREFIXES`), the claimed-label skip
+(`CLAIMED_LABELS`), and manual-vs-codeowner reviewer provenance via the
+issue timeline (`make_request_actors_resolver`, fetched lazily only when
+a silent merge-rights reviewer is pending). The two impure resolvers
+(`has_merge_rights`, `request_actors`) are injected into `adjudicate` so
+the classification logic is unit-testable without network.
+
+`greendog triage` prints a dry-run table (with the criterion that fired
+per maintainer); `greendog triage --apply` labels the `mark_triaged` PRs
+and adds the engaged maintainer as a reviewer where missing.
 
 This was originally prototyped as a subagent workflow (condense each PR,
 fan out over chunks, apply the rubric), and the LLM verdicts agreed
-exactly with the deterministic scan — the only judgment the LLM added
-was drive-by-vs-substantive, which is now handled by
-`BOT_COMMAND_PREFIXES`.  Keep the subagent-workflow pattern in reserve
-for the *later* triage steps (beyond "is someone engaged?") that need
-real judgment; those are not yet built.
+exactly with the deterministic scan. Keep the subagent-workflow pattern
+in reserve for the *later* triage steps (beyond "is someone engaged?")
+that need real judgment; those are not yet built.
