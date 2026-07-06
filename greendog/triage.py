@@ -5,8 +5,9 @@ The pytorch/pytorch "needs triage" queue is open, non-draft PRs labeled
 step 1 of triage: if someone with merge rights is already engaged, we can
 bulk-mark the PR `triaged` (a human is on the hook).
 
-A PR hits the bar (→ mark_triaged) when a person with merge rights
-(admin/write on the repo), who is not the PR author or a bot:
+A PR hits the bar (→ mark_triaged) when a person who can ACTUALLY MERGE
+this PR (per merge_rules.yaml — see mergerules.py), who is not the PR
+author or a bot:
 
   1. left a substantive review or comment (design discussion, questions,
      requesting changes) — NOT a mechanical bot command; OR
@@ -20,9 +21,13 @@ Codeowner / author auto-assignment of a reviewer does NOT by itself count
 (criterion 3 requires a non-author assigner; a silent codeowner reviewer
 who never comments is not evidence of acceptance).
 
-Merge rights come from the repo permission API, not `authorAssociation`,
-which over-counts read-only collaborators.  See CLAUDE.md "OSS PR triage
-modality" for the full rubric.
+"Can actually merge it" is what `@pytorchbot merge` enforces: the person
+must be in the `approved_by` of a merge_rules.yaml rule whose `patterns`
+cover ALL of the PR's changed files (a global `*` rule for Core/Metamates,
+or a path-scoped rule for the files this PR touches).  This is stricter
+and more accurate than repo write access or `authorAssociation`, which
+over-count people who can't merge the PR in question.  See CLAUDE.md
+"OSS PR triage modality" for the full rubric.
 """
 from __future__ import annotations
 
@@ -30,6 +35,8 @@ import json
 import subprocess
 import sys
 from typing import Any, Callable
+
+from .mergerules import make_can_merge_resolver
 
 REPO = "pytorch/pytorch"
 
@@ -39,9 +46,6 @@ SEARCH = (
     'base:main -label:triaged draft:false label:"open source" '
     "NOT WIP NOT TESTING in:title -review:approved sort:updated-desc"
 )
-
-# Repo permission levels that confer merge rights.
-MERGE_PERMISSIONS = {"admin", "write", "maintain"}
 
 # A PR carrying this label is already claimed for landing (Edward's mergedog
 # automation, or jansel's).  Whoever claimed it should already be a reviewer,
@@ -76,7 +80,7 @@ def _is_bot_command(body: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def fetch_prs() -> list[dict]:
-    """Fetch the needs-triage queue with reviews + comments in one call."""
+    """Fetch the needs-triage queue with reviews, comments, files in one call."""
     cmd = [
         "gh", "pr", "list",
         "--repo", REPO,
@@ -84,28 +88,10 @@ def fetch_prs() -> list[dict]:
         "--state", "open",
         "--limit", "200",
         "--json",
-        "number,title,author,labels,reviewRequests,reviews,comments",
+        "number,title,author,labels,reviewRequests,reviews,comments,files",
     ]
     out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
     return json.loads(out)
-
-
-def make_merge_rights_resolver() -> Callable[[str], bool]:
-    """Return a cached `has_merge_rights(login) -> bool` backed by the API."""
-    cache: dict[str, bool] = {}
-
-    def has_merge_rights(login: str) -> bool:
-        if login not in cache:
-            r = subprocess.run(
-                ["gh", "api", f"repos/{REPO}/collaborators/{login}/permission",
-                 "--jq", ".permission"],
-                capture_output=True, text=True,
-            )
-            perm = r.stdout.strip() if r.returncode == 0 else ""
-            cache[login] = perm in MERGE_PERMISSIONS
-        return cache[login]
-
-    return has_merge_rights
 
 
 def make_request_actors_resolver() -> Callable[[int], dict[str, set[str]]]:
@@ -147,15 +133,16 @@ def make_request_actors_resolver() -> Callable[[int], dict[str, set[str]]]:
 
 def _classify_pr(
     pr: dict,
-    has_merge_rights: Callable[[str], bool],
+    can_merge: Callable[[str, list[str]], bool],
     request_actors: Callable[[int], dict[str, set[str]]],
 ) -> dict:
     author = (pr.get("author") or {}).get("login")
     labels = {l["name"] for l in (pr.get("labels") or [])}
     claimed = labels & CLAIMED_LABELS
+    files = [f["path"] for f in (pr.get("files") or [])]
 
     # requestedReviewers entries are Users (login) or Teams (slug).  Teams can't
-    # individually have merge rights, so keep only user logins for merge logic.
+    # individually merge a PR, so keep only user logins for the merge check.
     reviewers = {r["login"] for r in (pr.get("reviewRequests") or []) if r.get("login")}
 
     if claimed:
@@ -181,21 +168,21 @@ def _classify_pr(
             if not _is_bot_command(c.get("body", "")):
                 left_substantive.add(u)
 
-    # Candidates worth a (cached) merge-rights lookup: anyone who engaged, plus
-    # requested reviewers (needed for criteria 2 and 3).
+    # Candidates worth a merge check: anyone who engaged, plus requested
+    # reviewers (needed for criteria 2 and 3).
     candidates = (left_any | reviewers) - {author}
     candidates = {u for u in candidates if not _is_bot(u)}
 
+    # "Can merge this PR" is scoped to the PR's changed files.
+    mergers = {u for u in candidates if can_merge(u, files)}
+
     on_the_hook: dict[str, str] = {}  # user -> criterion label
     need_timeline = any(
-        u in reviewers and u not in left_any and has_merge_rights(u)
-        for u in candidates
+        u in reviewers and u not in left_any for u in mergers
     )
     actors = request_actors(pr["number"]) if need_timeline else {}
 
-    for u in sorted(candidates):
-        if not has_merge_rights(u):
-            continue
+    for u in sorted(mergers):
         if u in left_substantive:
             on_the_hook[u] = "substantive"          # criterion 1
         elif u in reviewers and u in left_any:
@@ -219,15 +206,15 @@ def _classify_pr(
 
 def adjudicate(
     prs: list[dict],
-    has_merge_rights: Callable[[str], bool] | None = None,
+    can_merge: Callable[[str, list[str]], bool] | None = None,
     request_actors: Callable[[int], dict[str, set[str]]] | None = None,
 ) -> list[dict]:
     """Classify each PR.  Resolvers default to the live gh-backed ones."""
-    if has_merge_rights is None:
-        has_merge_rights = make_merge_rights_resolver()
+    if can_merge is None:
+        can_merge = make_can_merge_resolver()
     if request_actors is None:
         request_actors = make_request_actors_resolver()
-    return [_classify_pr(pr, has_merge_rights, request_actors) for pr in prs]
+    return [_classify_pr(pr, can_merge, request_actors) for pr in prs]
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +241,6 @@ def cmd_triage(args) -> None:
     prs = fetch_prs()
     print(f"  {len(prs)} PR(s) in queue; checking merge rights…", file=sys.stderr)
     results = adjudicate(prs)
-
     if args.raw:
         print(json.dumps(results, indent=2))
         return

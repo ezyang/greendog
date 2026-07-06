@@ -5,6 +5,7 @@ description = "Investigate and fix master CI failures on pytorch/pytorch"
 requires-python = ">=3.10"
 dependencies = [
     "curl_cffi",
+    "pyyaml",
 ]
 
 [project.scripts]

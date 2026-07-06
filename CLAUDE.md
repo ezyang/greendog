@@ -328,20 +328,36 @@ Then pull per-PR detail with
 
 ### Step 1: "is a maintainer already engaged?"
 
-The first (and currently only) triage step: if someone with merge rights
-is ALREADY engaged on the PR, we can just bulk-mark it `triaged` — a
+The first (and currently only) triage step: if someone who can ACTUALLY
+MERGE the PR is ALREADY engaged, we can just bulk-mark it `triaged` — a
 human is on the hook, so it isn't stuck.
 
-**Merge rights come from the repo permission API, not `authorAssociation`.**
-`gh api repos/pytorch/pytorch/collaborators/<user>/permission` returns
-`admin` / `write` / `maintain` / `read` / `none`; only `admin`/`write`/
-`maintain` confer merge rights. `authorAssociation` (MEMBER/COLLABORATOR
-on a comment) OVER-counts: e.g. bohnstingl and ZhaoqiongZ show
-`COLLABORATOR` but only have `read`. Always gate on the permission API.
+**"Can actually merge it" = satisfies `merge_rules.yaml` for this PR.**
+Merges go through `@pytorchbot merge`, which enforces
+`.github/merge_rules.yaml`: a PR can be merged only when approved by
+someone in the `approved_by` list of a rule whose `patterns` cover ALL
+the PR's changed files. So merge rights are **path-scoped**, not a global
+write bit:
+- Global approvers — rules with pattern `*` (Metamates ~91, Core
+  Reviewers ~14, Core Maintainers ~9) — can merge ANY PR.
+- Scoped approvers — e.g. the ROCm rule's `jeffdaily`, the XPU rule's
+  `EikanWang`, the MPS rule's `jhavukainen`/`malfet`/`kurtamohler` — can
+  merge only PRs whose EVERY changed file matches their rule's patterns.
 
-A PR hits the bar (→ `mark_triaged`) when a person with merge rights who
-is NOT the PR author and NOT a bot (`claude`, `pytorch-bot`,
-`pytorchmergebot`, `pytorchbot`, `facebook-github-bot`, `*bot`):
+This is stricter and more accurate than the repo permission API or
+`authorAssociation`, both of which over-count: `authorAssociation`
+reports bohnstingl/ZhaoqiongZ as `COLLABORATOR` though they only have
+`read`; the permission API reports repo write, which isn't the same as
+being in a merge rule for this PR's files. We replicate trymerge's own
+glob→regex (`patterns_to_regex`) and "all files must match" logic so our
+notion of "can merge" matches what the bot would allow. Teams in
+`approved_by` (e.g. `pytorch/pytorch-dev-infra`) are expanded via the
+org teams API.
+
+A PR hits the bar (→ `mark_triaged`) when a person who can merge THIS PR
+(per the above), who is NOT the PR author and NOT a bot (`claude`,
+`pytorch-bot`, `pytorchmergebot`, `pytorchbot`, `facebook-github-bot`,
+`*bot`):
 
 1. **left a substantive review or comment** — any real review state
    (CHANGES_REQUESTED / COMMENTED / APPROVED) or a substantive comment
@@ -400,15 +416,18 @@ automation entirely.)
 ### Workflow implementation note
 
 Step 1 is implemented deterministically as `greendog triage` (see
-`greendog/triage.py`) — no LLM needed. It encodes the three criteria and
-their exclusions as code: merge rights via the permission API (cached
-per user), the three engagement criteria in `_classify_pr`, the
-bot-command filter (`BOT_COMMAND_PREFIXES`), the claimed-label skip
-(`CLAIMED_LABELS`), and manual-vs-codeowner reviewer provenance via the
-issue timeline (`make_request_actors_resolver`, fetched lazily only when
-a silent merge-rights reviewer is pending). The two impure resolvers
-(`has_merge_rights`, `request_actors`) are injected into `adjudicate` so
-the classification logic is unit-testable without network.
+`greendog/triage.py` + `greendog/mergerules.py`) — no LLM needed. It
+encodes the three criteria and their exclusions as code: "can merge this
+PR" via `mergerules.py` (fetches `merge_rules.yaml` once, ports
+trymerge's `patterns_to_regex` + "all files match", expands teams), the
+three engagement criteria in `_classify_pr`, the bot-command filter
+(`BOT_COMMAND_PREFIXES`), the claimed-label skip (`CLAIMED_LABELS`), and
+manual-vs-codeowner reviewer provenance via the issue timeline
+(`make_request_actors_resolver`, fetched lazily only when a silent
+merger is a pending reviewer). The two impure resolvers (`can_merge`,
+`request_actors`) are injected into `adjudicate` so the classification
+logic is unit-testable without network. Needs `gh pr list --json ...,files`
+so each PR's changed files are available for the scoped merge check.
 
 `greendog triage` prints a dry-run table (with the criterion that fired
 per maintainer); `greendog triage --apply` labels the `mark_triaged` PRs
