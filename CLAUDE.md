@@ -252,6 +252,31 @@ Traps to avoid when investigating CI failures:
   wrong (TD excluded it? no, `--dynamo` excluded it? no, wrong shard?
   no, it ran and passed — it's actually merge skew). Follow the evidence
   step by step.
+- **A test file runs TWICE per shard: `-m '(serial)'` then
+  `-m '(not serial)'`.** `run_test.py` splits each file into a serial
+  invocation and a non-serial invocation, each running a DIFFERENT subset
+  of the file's tests. So a log line like `inductor/test_triton_heuristics
+  1/1 was successful` refers ONLY to the serial subset — the non-serial
+  invocation of the SAME file runs later and can fail. When grepping a log
+  to confirm/deny a test failure, find BOTH `Executing [...] '-m',
+  '(serial)'` and `'-m', '(not serial)'` runs; the `FAILED CONSISTENTLY`
+  and `The following tests failed consistently: [...]` summary lines live
+  at the very end of the second run. Corollary: `gh run view --log` can
+  truncate large logs mid-run (~5k lines) — if you don't see the failure,
+  fetch the raw log via `gh api repos/pytorch/pytorch/actions/jobs/<id>/logs`
+  (returned the full 26k-line log where `gh run view --log` stopped at 5k).
+- **`nogpu` shards crash GPU-requiring tests that lack a skip guard.**
+  Periodic `nogpu_AVX512` / `nogpu_NO_AVX2` shards run on machines with NO
+  NVIDIA driver. Any test whose setup calls `DeviceProperties.create(
+  torch.device(GPU_TYPE))` (or otherwise touches `torch._C._cuda_init()`)
+  dies with `RuntimeError: Found no NVIDIA driver on your system` unless
+  gated by `@requires_gpu()`/`@requires_cuda`. These tests typically only
+  appear in the `(not serial)` group, so they pass the serial run and fail
+  the non-serial one (see above). A test docstring claiming "pure-Python,
+  no GPU" is not a guarantee — check whether its fixtures build a
+  `CachingAutotuner`, which needs a real device. (Seen 2026-07-27:
+  `test_triton_heuristics.py::TestCheckLauncherCallArgs` et al. red on all
+  periodic nogpu shards.)
 
 ## Marking CI jobs as unstable
 
