@@ -499,3 +499,31 @@ commits) as a dry-run; `--apply` adds them via `gh pr edit --add-reviewer`
 (skips if they're already a reviewer). Validated on PR #188996 (FP8
 blockwise scaling fix): blames 26/26 changed lines to `jananisriram`, who
 introduced blockwise FP8 scaling in Inductor — assigned as reviewer.
+
+#### Cross-functional campaign PRs → route to the campaign owner, not the module owner
+
+Some PRs belong to a coordinated, repo-wide effort rather than to one
+subsystem. The clearest current example is the **device-agnostic /
+accelerator-generalization test campaign** — titles like `[Testcase
+Refactoring] ...`, `Make <file> device-agnostic`, `Replace CUDA/XPU-only
+skips with generic accelerator checks`; changes that swap
+`TEST_MULTIGPU`→`TEST_MULTIACCELERATOR`, hardcoded `cuda` →
+`instantiate_device_type_tests` + injected `device`, to enable
+privateuse1/NPU/XPU backends. These are usually test-only, so `greendog
+suggest` declines them (no core-file owner) AND the per-file module owner
+(e.g. export→`angelayi`, fsdp→`weifengpy`) is the WRONG reviewer — they
+own the subsystem, not the xfn effort.
+
+The right reviewer is whoever drives the campaign across all files. For
+the accelerator-generalization effort that's **`fffrog`** (with the
+"Accelerator / PrivateUse1" `merge_rules` group: `guangyey`, `EikanWang`,
+`albanD` the core sponsor). How to identify the owner for a campaign:
+the PR body often @-pings them and/or references a foundational PR whose
+requested reviewers reveal the coordinator (e.g. #187650 → `fffrog`).
+
+Caveat: these test files usually don't match the campaign's merge-rule
+patterns, so the campaign owner can't necessarily *merge* via that rule —
+but they're still the correct *reviewer*; a global approver (`albanD`)
+or the module owner co-signs the actual merge. Resolution: add the
+campaign owner as reviewer, mark triaged. Examples: #191177 (export
+test), #191162 (fsdp test_wrap) → both routed to `fffrog`.
