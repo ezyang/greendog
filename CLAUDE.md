@@ -527,3 +527,35 @@ but they're still the correct *reviewer*; a global approver (`albanD`)
 or the module owner co-signs the actual merge. Resolution: add the
 campaign owner as reviewer, mark triaged. Examples: #191177 (export
 test), #191162 (fsdp test_wrap) → both routed to `fffrog`.
+
+#### Liveness check: don't route to people who've left (use the `metamates` team)
+
+Blame/history-based suggestion routinely names the plurality author of the
+touched code — but that person may have LEFT. Before assigning a
+blame-derived reviewer, verify they're still around. The authoritative,
+up-to-date roster of current Meta employees is the GitHub team
+**`pytorch/metamates`** (~690 members), fetched via
+`gh api orgs/pytorch/teams/metamates/members --paginate --jq '.[].login'`.
+This is the same team `merge_rules.yaml`'s "Metamates" `*` rule expands,
+and it's kept current (departures are removed) — far more reliable than
+the static name list in `merge_rules.yaml` or commit-recency guessing.
+
+Interpretation depends on the candidate's commit email:
+- **Meta email (`@fb.com`/`@meta.com`) but NOT in `metamates`** → they've
+  left Meta; do NOT route to them. (Verified: `davidberard98`,
+  `jamesjwu` — both plurality authors of static-launcher code, both gone.)
+- **In `metamates`** → current, safe to assign (`jananisriram`,
+  `bobrenjc93`, `eellison`).
+- **External contributor (`@intel.com`/`@amd.com`/gmail/etc.)** →
+  `metamates` doesn't apply (e.g. `fffrog` is Intel, not a metamate but
+  very much active); judge them on their own recent activity / team.
+
+Fallback when the top blame owner is a departed Meta employee: pick the
+most recent *active* (in-`metamates`, or externally active) contributor
+on the SAME subsystem, optionally paired with a high-commit-volume
+adjacent engineer for responsiveness. Example: #191133 ("global scratch
+in static Triton launcher") blamed to the departed `davidberard98`/
+`jamesjwu`; rerouted to `jananisriram` (current static-launcher feature
+owner) + `bobrenjc93` (very active runtime launch-metadata). This
+liveness gate is a good future `greendog suggest` enhancement — check
+blame-derived logins against `metamates` and drop departed Meta authors.
