@@ -571,6 +571,21 @@ blame-derived logins on the commit-recency check above (drop only authors
 who are both cold AND not in metamates), NOT on metamates membership alone
 — that would wrongly drop live people like ngimel.
 
+#### Double-check jansel-assigned reviewers
+
+jansel runs reviewer-assignment automation, and it picks plausible-but-
+wrong reviewers via naive signal — someone with a single tangential commit
+to the area, not the actual owner. When you find a PR whose only reviewer
+was requested by `jansel` (check the issue timeline
+`review_requested` actor), re-derive the owner yourself before trusting it.
+Blame the *feature* (`git log -S '<function/symbol>' -- <file>`), not just
+the changed line-region, since the line-region is often generic churn.
+Verified: #190555 ("[inductor] Partition cross-device fallbacks from CUDA
+graphs") — jansel assigned `zou3519`, whose entire graph-partition history
+was one custom-rule hook (#163310); the real owner is `BoyuanFeng`, who
+authored the whole Graph Partition feature (`should_partition`). Swapped
+`-zou3519 +BoyuanFeng`.
+
 ### Triage sweeps: ALWAYS confirm before actioning
 
 Any sweep that edits PRs in bulk (adds reviewers, applies `triaged`, etc.)
