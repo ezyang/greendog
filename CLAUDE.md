@@ -528,37 +528,48 @@ or the module owner co-signs the actual merge. Resolution: add the
 campaign owner as reviewer, mark triaged. Examples: #191177 (export
 test), #191162 (fsdp test_wrap) → both routed to `fffrog`.
 
-#### Liveness check: don't route to people who've left (use the `metamates` team)
+#### Liveness check: don't route to people who've left (commit-recency is primary)
 
 Blame/history-based suggestion routinely names the plurality author of the
 touched code — but that person may have LEFT. Before assigning a
-blame-derived reviewer, verify they're still around. The authoritative,
-up-to-date roster of current Meta employees is the GitHub team
-**`pytorch/metamates`** (~690 members), fetched via
-`gh api orgs/pytorch/teams/metamates/members --paginate --jq '.[].login'`.
-This is the same team `merge_rules.yaml`'s "Metamates" `*` rule expands,
-and it's kept current (departures are removed) — far more reliable than
-the static name list in `merge_rules.yaml` or commit-recency guessing.
+blame-derived reviewer, verify they're still around.
 
-Interpretation depends on the candidate's commit email:
-- **Meta email (`@fb.com`/`@meta.com`) but NOT in `metamates`** → they've
-  left Meta; do NOT route to them. (Verified: `davidberard98`,
-  `jamesjwu` — both plurality authors of static-launcher code, both gone.)
-- **In `metamates`** → current, safe to assign (`jananisriram`,
-  `bobrenjc93`, `eellison`).
+**The reliable signal is recent commit activity under the person's Meta
+email**, NOT team membership. Check:
+`git log --since=<~90 days ago> --author='<email>' --oneline | wc -l`
+(and eyeball the latest commit date). Recent `@meta.com`/`@fb.com` commits
+⇒ still at Meta, full stop.
+
+The GitHub team **`pytorch/metamates`** (~690 members, fetched via
+`gh api orgs/pytorch/teams/metamates/members --paginate --jq '.[].login'`,
+the same team `merge_rules.yaml`'s "Metamates" `*` rule expands) is a
+useful *positive* confirmation — but it is NOT a complete Meta roster: it
+has **false negatives**. Verified: `ngimel` is a current Meta employee
+(32 commits in the last 90 days, latest 2026-07-21) yet is NOT in the
+metamates team. So absence from `metamates` does NOT mean departed.
+
+Decision rule by candidate commit email:
+- **Meta email (`@fb.com`/`@meta.com`)** → CURRENT if EITHER in `metamates`
+  OR has recent Meta-email commits. Conclude DEPARTED only when BOTH are
+  false (not in `metamates` AND ~0 commits in the last 90 days). Verified
+  departed: `davidberard98` (0 since 2026-04, last 2025-09) and `jamesjwu`
+  (0 since 2026-04, last 2025-11) — both not in metamates AND cold.
+  Verified current: `ngimel` (metamate=no, commits=hot), `mlazos`
+  (metamate=yes, commits=hot), `jananisriram`, `bobrenjc93`.
 - **External contributor (`@intel.com`/`@amd.com`/gmail/etc.)** →
   `metamates` doesn't apply (e.g. `fffrog` is Intel, not a metamate but
   very much active); judge them on their own recent activity / team.
 
-Fallback when the top blame owner is a departed Meta employee: pick the
-most recent *active* (in-`metamates`, or externally active) contributor
-on the SAME subsystem, optionally paired with a high-commit-volume
-adjacent engineer for responsiveness. Example: #191133 ("global scratch
-in static Triton launcher") blamed to the departed `davidberard98`/
-`jamesjwu`; rerouted to `jananisriram` (current static-launcher feature
-owner) + `bobrenjc93` (very active runtime launch-metadata). This
-liveness gate is a good future `greendog suggest` enhancement — check
-blame-derived logins against `metamates` and drop departed Meta authors.
+Fallback when the top blame owner is genuinely departed: pick the most
+recent *active* contributor on the SAME subsystem, optionally paired with
+a high-commit-volume adjacent engineer for responsiveness. Example:
+#191133 ("global scratch in static Triton launcher") blamed to the
+departed `davidberard98`/`jamesjwu`; rerouted to `jananisriram` (current
+static-launcher feature owner) + `bobrenjc93` (very active runtime
+launch-metadata). Good future `greendog suggest` enhancement: gate
+blame-derived logins on the commit-recency check above (drop only authors
+who are both cold AND not in metamates), NOT on metamates membership alone
+— that would wrongly drop live people like ngimel.
 
 ### Triage sweeps: ALWAYS confirm before actioning
 
