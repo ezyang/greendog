@@ -390,6 +390,22 @@ What does NOT count:
   triaged on that basis alone (unless he's also a reviewer → criterion 2,
   or left a real human review → criterion 1).
 
+**Backend-ifdef'd core files: scoped owner review + global rubber-stamp
+is fine.** A PR can be labeled `module: rocm` (or xpu, etc.) yet change
+only a *core* file whose path doesn't match the backend's `merge_rules`
+patterns (`**rocm**`/`**hip**`), so the scoped owner (e.g. `jeffdaily`)
+can't merge it via that rule. But if the ENTIRE diff is guarded behind
+the backend ifdef (`#if defined(USE_ROCM)...` — the non-backend path
+byte-for-byte unchanged), the module owner's review is still the
+substantive gate; a global approver (Edward) just needs a light final
+sign-off to merge. `greendog triage` can't detect this — it only sees
+file paths, not that the diff is ifdef-guarded — so it's a manual call.
+Acceptable resolution: add the module owner AND a merge-capable global
+approver as reviewers, then mark triaged (the "bat it to me after
+module-owner review" flow). Example: PR #191062 added a ROCm-only OCKL
+`CUDA_KERNEL_ASSERT` variant entirely inside `#if defined(USE_ROCM)` in
+`torch/headeronly/macros/Macros.h`.
+
 ### Step 2: on-the-hook people must actually be reviewers
 
 If we conclude a maintainer is "on the hook" for a PR, they should be a
