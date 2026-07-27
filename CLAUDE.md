@@ -559,3 +559,47 @@ in static Triton launcher") blamed to the departed `davidberard98`/
 owner) + `bobrenjc93` (very active runtime launch-metadata). This
 liveness gate is a good future `greendog suggest` enhancement — check
 blame-derived logins against `metamates` and drop departed Meta authors.
+
+### Triage sweeps: ALWAYS confirm before actioning
+
+Any sweep that edits PRs in bulk (adds reviewers, applies `triaged`, etc.)
+MUST be presented to the user in this terminal and confirmed BEFORE any
+mutation. Gather + classify + show the proposed actions (a table of
+PR → reviewer → action, ideally in confidence tiers), then wait for the
+user to approve/adjust scope. Never auto-apply a sweep's edits. (Standing
+instruction from Edward.)
+
+#### Sweep pattern A — device-agnostic test campaign → `fffrog`
+
+Scan the triage queue for `fffrog`-shaped PRs (see the campaign note
+above): test-only PRs making tests device-agnostic / adding PrivateUse1 /
+NPU / OOT-backend support, or swapping `torch.cuda`→`torch.accelerator`.
+Strong signal = `@fffrog` (and the campaign crew `wjlFlyer`/`FuDdd`/
+`JiasenTian`/`jishuangfeng`/`lyriexs666`/`pjyFight`/`JamesD18`) @-pinged in
+the PR body, or fffrog already a reviewer. Route to `fffrog` + triage.
+When scanning body @-mentions, DROP false pings that are actually code
+decorators (`@requires_gpu`, `@skipIfXpu`, `@unittest`,
+`@skip_if_lt_x_gpu`, `@requires_accelerator_dist_backend`, …) — match only
+real logins. Distinguish from *inductor-XPU enablement* PRs (edit core
+`torch/_inductor/**` or bump a triton-xpu submodule) which route to
+inductor-XPU owners (`guangyey`/`EikanWang`), not the test campaign.
+First applied 2026-07-27: swept 12 PRs to `fffrog` (#191080, #191179,
+#191160, #191180, #191170, #191094, #191079, #191131, #191087, #191088,
+#191090, #191093).
+
+#### Sweep pattern B — human review-like engagement → assign the human + triage
+
+Archetype: PR #191086, where `Skylion007` (a Core Reviewer) left a
+substantive human review comment ("is there no way to optimize this fast
+path … without template bloat?"). That's real engagement → the engaged
+human should be a reviewer, and the PR gets `triaged`. Sweep the queue for
+PRs carrying evidence of **human** review-like action — a real review
+state (CHANGES_REQUESTED / COMMENTED / APPROVED) or a substantive comment
+(design question/critique), by a non-author, non-bot human. Then add that
+human as reviewer (if missing) + triage. This is the same spirit as
+`greendog triage` criterion 1, done as a manual sweep.
+Disqualifications: all bots (`pytorch-bot`, `pytorchmergebot`,
+`pytorchbot`, `facebook-github-bot`, `claude`, `*bot`) AND **jansel** —
+his `@claude review these changes` are bot automation, NOT human
+engagement (per the jansel note above), so a jansel comment alone never
+qualifies a PR.
