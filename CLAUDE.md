@@ -298,6 +298,32 @@ Traps to avoid when investigating CI failures:
   hard red job. A `DISABLED test_metal_capture (__main__.TestMPS)` issue
   WOULD skip it (the `-k` invocation still goes through the unittest
   disable path) but at the cost of losing metal-capture coverage.
+  Measured rate (2026-07-26→28, 72 trunk commits): 3 hits, ALL on
+  `macos-m2-15`, 0 on `macos-m1-14` (~4% of m2-15 runs; m1-14 clean).
+  Long-standing, not a regression: the test exists since #144561
+  (2025-01), the CI line since #153012 (2025-05), and the C++ capture
+  path (`aten/src/ATen/mps/MPSProfiler.mm`) has been stable through 2026.
+  Root cause (source read, not repro'd): the crash is almost certainly
+  inside Apple's `MTLCaptureManager` serializing a **device-scope**
+  `.gputrace` document of a freshly `compile_shader`-compiled pipeline —
+  `MPSProfiler.mm:807` captures at whole-device scope (stream is nullptr)
+  with `destination=MTLCaptureDestinationGPUTraceDocument`; there is NO
+  `MACOS_VERSION`/`@available` guard anywhere in start/stop, so stability
+  is inherited from the host Metal framework (explains M2-vs-M1 split).
+  The `startCaptureWithDescriptor:error:` return IS checked
+  (`MPSProfiler.mm:811` `TORCH_CHECK`), so a failed start = clean
+  RuntimeError, not the segfault. Two genuinely-fixable PyTorch defects
+  that could amplify a native crash (cheap PRs for an MPS owner): (1)
+  `stopCapture` (`MPSProfiler.mm:814-819`) is UNGUARDED — Python's
+  `finally: _mps_stopCapture()` (`torch/mps/profiler.py:101`) runs even
+  when start threw, calling `[captureManager stopCapture]` while not
+  capturing (stop-without-start / double-stop UB); guard with
+  `if (captureManager == nil || ![captureManager isCapturing]) return;`.
+  (2) `stopCapture(nullptr)` does no drain of its own; the only sync is
+  `torch.mps.synchronize()` in the `try` body, skipped if the `with` body
+  raises → serializing an in-flight command buffer. Narrowing capture to
+  command-queue scope (pass the stream at `MPSProfiler.mm:807`) would also
+  shrink the blast radius.
 - **A test file runs TWICE per shard: `-m '(serial)'` then
   `-m '(not serial)'`.** `run_test.py` splits each file into a serial
   invocation and a non-serial invocation, each running a DIFFERENT subset
