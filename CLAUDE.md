@@ -60,6 +60,10 @@ failures on pytorch/pytorch.  Here is the design space we live in:
   commit them before reporting back, unless the user explicitly asks not to
   commit. Do not include generated artifacts, caches, virtualenvs, credentials,
   or unrelated user changes in the commit.
+- This file holds only short, generalizable guidance. Detailed forensic
+  write-ups of specific investigations live in `CASE_NOTES.md` — add new
+  cases there, and only add a pattern here (after confirming with Edward)
+  when it's genuinely reusable.
 
 ## Analysis methodology
 
@@ -108,9 +112,12 @@ When analyzing CI health, follow this approach:
 ## Investigating autoreverts and landed-then-broken PRs
 
 When a PR lands and gets autoreverted, the key question is always: why
-did CI pass pre-merge but fail post-merge? Follow this checklist —
-and after completing the investigation, write up learnings into this
-file if the failure mode was novel.
+did CI pass pre-merge but fail post-merge? Follow this checklist.
+
+(If an investigation reveals a genuinely novel, *reusable* pattern,
+propose a short CLAUDE.md addition and ask before writing it. Full
+case-specific forensics — dates, line numbers, measured rates — go in
+CASE_NOTES.md, not here.)
 
 1. **First verify: is the landed commit the same as the tested commit?**
    This is the most important check and should be done early. The PR head
@@ -120,15 +127,12 @@ file if the failure mode was novel.
    git diff <pr-head-sha> <merge-commit-sha> -- <relevant files>
    ```
    If they differ, the merge/squash/rebase onto main silently produced
-   different code than what was tested. This happened with PR #182192:
-   another PR (#181271) landed between the ghstack base sync and merge
-   time, touching the same file. The squash onto main resolved conflicts
-   silently but incorrectly — tests referenced a method that the
-   conflicting PR had already removed.
-
-   To find the conflicting commit: identify the ghstack base
+   different code than what was tested — typically because another PR
+   touching the same file landed between the ghstack base sync and merge
+   time. To find the conflicting commit: identify the ghstack base
    (`gh/<user>/<n>/base`) and main at land time (parent of merge commit),
-   then `git log <base>..<main-at-land> -- <file>`.
+   then `git log <base>..<main-at-land> -- <file>`. (Case: PR #182192,
+   see CASE_NOTES.md.)
 
 2. **Pull actual CI logs to verify test execution.** Don't assume tests
    ran or didn't run — check. Use `gh run view --repo pytorch/pytorch
@@ -201,12 +205,10 @@ file if the failure mode was novel.
       also passed, the failure is definitely from trunk skew, not
       from the stack itself.
 
-   Example: PR #182293 was autoreverted for "unexpected success" in
-   `test_impl_device_cpu`. The test ran and passed on PR CI (the
-   expected failure was still failing as expected). But PR #181328
-   (dynamo hash reimplementation) landed in the skew window, fixed
-   the underlying dynamo tracing issue, and caused the test to start
-   passing on trunk — making the expected-failure marker stale.
+   Skew can also work in reverse: an "unexpected success" autorevert
+   can mean another PR in the skew window fixed the underlying issue
+   and made an expected-failure marker stale. (Case: PR #182293, see
+   CASE_NOTES.md.)
 
 ## Target determination (TD) reference
 
@@ -254,76 +256,26 @@ Traps to avoid when investigating CI failures:
   step by step.
 - **A named test can be the fall guy for a shared lazy-build/lock hang,
   not the actual failure.** Tests that lazily build a `cpp_extension`
-  (e.g. `load_inline`) block on a build lock (`torch/utils/file_baton.py`
-  → now `filelock`). If a runner has a stale lock file, the build spins
-  forever and the WHOLE shard hangs until the ~30-min wall-clock timeout
-  kills it; pytest then marks the FIRST test that triggered the build as
-  `FAILED CONSISTENTLY`. The named test is arbitrary — it's just whichever
-  test first hit the lazy build. Tell: the traceback ends in
-  `KeyboardInterrupt` at `file_baton.py` (the spin loop) and the run
-  summary shows `NNN passed ... in ~1796s (0:29:56)`, i.e. it timed out,
-  it didn't assert-fail. This is infra, not a code regression and not a
-  bad PR — don't hunt for a culprit commit or a revert. Seen 2026-07:
-  `test_mps.py::TestBinaryIteratorConformance::test_simple_add_bfloat16_float32_float32_shape2`
-  on `macos-m2-15` runners (issue #190674, malfet; fixed by #190543
-  `a84391f`, FileBaton→filelock). Corollary: before deep-diving a HUD
-  failure, first scan whether the OWNING JOB is even red on recent trunk
-  — this one had been green for 11+ days; the HUD page was showing stale
-  pre-fix hits.
-- **A macOS `mps` red is NOT necessarily the lazy-build/file_baton hang —
-  distinguish an instant SIGSEGV from a 30-min timeout.** The trunk
-  `macos-py3-arm64 / test (mps, ...)` job runs the normal mps suite via
-  `run_test.py --mps` AND THEN a separate raw line in
-  `.ci/pytorch/macos-test.sh` (`test_python_mps`, ~line 44):
-  `MTL_CAPTURE_ENABLED=1 python3 test/test_mps.py --verbose -k
-  test_metal_capture`. That test is skipped everywhere else (guarded by
-  `is_metal_capture_enabled()`); this is the only place it runs. It drives
-  Apple's `MTLCaptureManager` (`torch.mps.profiler.metal_capture`) to emit
-  a `.gputrace`, and that Apple path can hard-crash the interpreter:
-  `macos-test.sh: line 40: NNNNN Segmentation fault: 11 ...` →
-  `##[error]Process completed with exit code 139`. Tells that it's THIS
-  and not the file_baton hang: (a) exit 139 / `Segmentation fault: 11`,
-  instant, NOT `~1796s (0:29:56)` + `KeyboardInterrupt`; (b) the grep for
-  the segfault line is `.ci/pytorch/macos-test.sh: line 40`, i.e. the
-  standalone invocation, AFTER `Finished test_mps 3/3 ... successful` — the
-  2901-item main suite passed, so ~all real tests are green and only the
-  capture line killed the job. Observed flaky & RUNNER-SPECIFIC: on
-  2026-07-28 commit `a57db29aa6` it crashed on `macos-m2-15` but PASSED on
-  `macos-m1-14` (same commit), and passed on ~17/18 surrounding commits.
-  The commit was unrelated (an inductor nogpu-skip PR) → it's an infra/GPU
-  flake in Apple's capture tooling, not a code regression; don't hunt a
-  culprit or revert. No dedicated disable issue existed as of 2026-07-28
-  (search `test_metal_capture`). Caveat: because it's a raw `python3 ...`
-  line (not run_test.py), it has NO rerun/flake retry — one Apple crash =
-  hard red job. A `DISABLED test_metal_capture (__main__.TestMPS)` issue
-  WOULD skip it (the `-k` invocation still goes through the unittest
-  disable path) but at the cost of losing metal-capture coverage.
-  Measured rate (2026-07-26→28, 72 trunk commits): 3 hits, ALL on
-  `macos-m2-15`, 0 on `macos-m1-14` (~4% of m2-15 runs; m1-14 clean).
-  Long-standing, not a regression: the test exists since #144561
-  (2025-01), the CI line since #153012 (2025-05), and the C++ capture
-  path (`aten/src/ATen/mps/MPSProfiler.mm`) has been stable through 2026.
-  Root cause (source read, not repro'd): the crash is almost certainly
-  inside Apple's `MTLCaptureManager` serializing a **device-scope**
-  `.gputrace` document of a freshly `compile_shader`-compiled pipeline —
-  `MPSProfiler.mm:807` captures at whole-device scope (stream is nullptr)
-  with `destination=MTLCaptureDestinationGPUTraceDocument`; there is NO
-  `MACOS_VERSION`/`@available` guard anywhere in start/stop, so stability
-  is inherited from the host Metal framework (explains M2-vs-M1 split).
-  The `startCaptureWithDescriptor:error:` return IS checked
-  (`MPSProfiler.mm:811` `TORCH_CHECK`), so a failed start = clean
-  RuntimeError, not the segfault. Two genuinely-fixable PyTorch defects
-  that could amplify a native crash (cheap PRs for an MPS owner): (1)
-  `stopCapture` (`MPSProfiler.mm:814-819`) is UNGUARDED — Python's
-  `finally: _mps_stopCapture()` (`torch/mps/profiler.py:101`) runs even
-  when start threw, calling `[captureManager stopCapture]` while not
-  capturing (stop-without-start / double-stop UB); guard with
-  `if (captureManager == nil || ![captureManager isCapturing]) return;`.
-  (2) `stopCapture(nullptr)` does no drain of its own; the only sync is
-  `torch.mps.synchronize()` in the `try` body, skipped if the `with` body
-  raises → serializing an in-flight command buffer. Narrowing capture to
-  command-queue scope (pass the stream at `MPSProfiler.mm:807`) would also
-  shrink the blast radius.
+  (e.g. `load_inline`) block on a shared build lock. If a runner has a
+  stale lock file, the WHOLE shard hangs until the ~30-min wall-clock
+  timeout kills it; pytest then marks the FIRST test that triggered the
+  build as `FAILED CONSISTENTLY` — the named test is arbitrary. Tell:
+  traceback ends in `KeyboardInterrupt` in the lock spin loop and the
+  run summary shows `NNN passed ... in ~1796s (0:29:56)` — a timeout,
+  not an assert failure. Infra, not a regression; don't hunt a culprit.
+  Corollary: before deep-diving a HUD failure, first check whether the
+  owning job is even red on recent trunk — HUD pages can show stale hits.
+  (Case: 2026-07 test_mps / file_baton, see CASE_NOTES.md.)
+- **A macOS `mps` red is NOT necessarily the lock hang — distinguish an
+  instant SIGSEGV from a 30-min timeout.** The trunk mps job also runs a
+  standalone `MTL_CAPTURE_ENABLED=1 ... -k test_metal_capture` line in
+  `.ci/pytorch/macos-test.sh` (only place this test runs), which drives
+  Apple's `MTLCaptureManager` and can segfault the interpreter inside
+  Apple's framework. Tell: `Segmentation fault: 11` / exit 139, instant,
+  AFTER the main mps suite already passed. Known runner-specific infra
+  flake (~4% on `macos-m2-15`, clean on m1-14), long-standing, no
+  rerun/retry since it bypasses run_test.py — not a regression, don't
+  hunt a culprit. (Full forensics + fixable-defect notes: CASE_NOTES.md.)
 - **A test file runs TWICE per shard: `-m '(serial)'` then
   `-m '(not serial)'`.** `run_test.py` splits each file into a serial
   invocation and a non-serial invocation, each running a DIFFERENT subset
@@ -346,40 +298,18 @@ Traps to avoid when investigating CI failures:
   appear in the `(not serial)` group, so they pass the serial run and fail
   the non-serial one (see above). A test docstring claiming "pure-Python,
   no GPU" is not a guarantee — check whether its fixtures build a
-  `CachingAutotuner`, which needs a real device. (Seen 2026-07-27:
-  `test_triton_heuristics.py::TestCheckLauncherCallArgs` et al. red on all
-  periodic nogpu shards.)
-
-- **`backwards_compat` red is almost never the test HUD names — it runs
-  deliberate self-check meta-tests that ALWAYS fail.** The `backwards_compat`
-  job runs `test_forward_backward_compatibility()` in `.ci/pytorch/test.sh`,
-  which does two unrelated things: (1) three failure-injection meta-tests
-  (`check_public_api_test_fails`, test.sh:~1864) that INTENTIONALLY break
-  something and assert the public-API test catches it — Step 1&2 make
-  `test_correct_module_names` fail, Step 3 `mktemp`s a module with
-  `"invalid syntax garbage"` and makes `test_modules_can_be_imported` fail;
-  each prints `Success!` on the EXPECTED failure and emits `Generating XML
-  reports...`, so a failed-XML for those two tests is written on EVERY run
-  by design. Then (2) the real C++ schema check
-  (`check_forward_backward_compatibility.py`), a plain script that emits NO
-  named-test XML. So when the job goes red for ANY reason, HUD's per-test
-  classifier latches onto the ever-present meta-test failure — usually
-  `test_modules_can_be_imported` (Step 3, runs last) — and mislabels the
-  job. This yields the classic "1 red / N green" pattern: on green commits
-  the real check passed so no test attribution surfaces; on the red commit
-  the same intentional meta-test failure gets blamed. **When you see
-  `test_modules_can_be_imported` or `test_correct_module_names` red on
-  `backwards_compat`, ignore the name — scroll to the END of the log for the
-  real cause,** typically the `check_forward_backward_compatibility.py`
-  `Broken ops: [...]` block followed by `exit code 1`. Corollary: reverting
-  a PR that changed an ATen op signature LEGITIMATELY trips this check —
-  removing an op parameter is backward-incompatible, so the reverted schema
-  no longer matches the reference. That's a real (expected) red, not a
-  flake; the clean fix is a `check_forward_backward_compatibility.py`
-  ALLOW_LIST entry in the revert. (Seen 2026-07-28: commit `569f1f64e1`
-  `Revert "Add keepdim parameter to cosine_similarity (#189654)"` →
-  `Broken ops: [aten::cosine_similarity(..., bool keepdim=False)]`,
-  HUD blamed `test_modules_can_be_imported`.)
+  `CachingAutotuner`, which needs a real device.
+- **`backwards_compat` red is almost never the test HUD names.** The job
+  runs deliberate failure-injection meta-tests that write a failed XML
+  for `test_correct_module_names` / `test_modules_can_be_imported` on
+  EVERY run by design, then the real C++ schema check
+  (`check_forward_backward_compatibility.py`), which emits no named-test
+  XML. When the job goes red for any reason, HUD's per-test classifier
+  latches onto the ever-present meta-test failure. **Ignore the named
+  test — scroll to the END of the log for the real cause,** typically a
+  `Broken ops: [...]` block. Corollary: reverting a PR that changed an
+  ATen op signature legitimately trips this check; the clean fix is an
+  ALLOW_LIST entry in the revert. (Mechanics + case: CASE_NOTES.md.)
 
 ## Marking CI jobs as unstable
 
