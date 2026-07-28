@@ -270,6 +270,34 @@ Traps to avoid when investigating CI failures:
   failure, first scan whether the OWNING JOB is even red on recent trunk
   — this one had been green for 11+ days; the HUD page was showing stale
   pre-fix hits.
+- **A macOS `mps` red is NOT necessarily the lazy-build/file_baton hang —
+  distinguish an instant SIGSEGV from a 30-min timeout.** The trunk
+  `macos-py3-arm64 / test (mps, ...)` job runs the normal mps suite via
+  `run_test.py --mps` AND THEN a separate raw line in
+  `.ci/pytorch/macos-test.sh` (`test_python_mps`, ~line 44):
+  `MTL_CAPTURE_ENABLED=1 python3 test/test_mps.py --verbose -k
+  test_metal_capture`. That test is skipped everywhere else (guarded by
+  `is_metal_capture_enabled()`); this is the only place it runs. It drives
+  Apple's `MTLCaptureManager` (`torch.mps.profiler.metal_capture`) to emit
+  a `.gputrace`, and that Apple path can hard-crash the interpreter:
+  `macos-test.sh: line 40: NNNNN Segmentation fault: 11 ...` →
+  `##[error]Process completed with exit code 139`. Tells that it's THIS
+  and not the file_baton hang: (a) exit 139 / `Segmentation fault: 11`,
+  instant, NOT `~1796s (0:29:56)` + `KeyboardInterrupt`; (b) the grep for
+  the segfault line is `.ci/pytorch/macos-test.sh: line 40`, i.e. the
+  standalone invocation, AFTER `Finished test_mps 3/3 ... successful` — the
+  2901-item main suite passed, so ~all real tests are green and only the
+  capture line killed the job. Observed flaky & RUNNER-SPECIFIC: on
+  2026-07-28 commit `a57db29aa6` it crashed on `macos-m2-15` but PASSED on
+  `macos-m1-14` (same commit), and passed on ~17/18 surrounding commits.
+  The commit was unrelated (an inductor nogpu-skip PR) → it's an infra/GPU
+  flake in Apple's capture tooling, not a code regression; don't hunt a
+  culprit or revert. No dedicated disable issue existed as of 2026-07-28
+  (search `test_metal_capture`). Caveat: because it's a raw `python3 ...`
+  line (not run_test.py), it has NO rerun/flake retry — one Apple crash =
+  hard red job. A `DISABLED test_metal_capture (__main__.TestMPS)` issue
+  WOULD skip it (the `-k` invocation still goes through the unittest
+  disable path) but at the cost of losing metal-capture coverage.
 - **A test file runs TWICE per shard: `-m '(serial)'` then
   `-m '(not serial)'`.** `run_test.py` splits each file into a serial
   invocation and a non-serial invocation, each running a DIFFERENT subset
