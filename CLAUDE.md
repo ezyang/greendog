@@ -403,10 +403,10 @@ write bit:
   merge only PRs whose EVERY changed file matches their rule's patterns.
 
 This is stricter and more accurate than the repo permission API or
-`authorAssociation`, both of which over-count: `authorAssociation`
-reports bohnstingl/ZhaoqiongZ as `COLLABORATOR` though they only have
-`read`; the permission API reports repo write, which isn't the same as
-being in a merge rule for this PR's files. We replicate trymerge's own
+`authorAssociation`, both of which over-count: `authorAssociation` can
+report `COLLABORATOR` for people with only `read`, and the permission
+API reports repo write, which isn't the same as being in a merge rule
+for this PR's files. We replicate trymerge's own
 glob→regex (`patterns_to_regex`) and "all files must match" logic so our
 notion of "can merge" matches what the bot would allow. Teams in
 `approved_by` (e.g. `pytorch/pytorch-dev-infra`) are expanded via the
@@ -422,9 +422,7 @@ A PR hits the bar (→ `mark_triaged`) when a person who can merge THIS PR
    (design discussion, questions, requesting changes); OR
 2. **is a requested reviewer AND left any comment at all** — even a
    mechanical bot command like `@claude review this please`. Commenting
-   while assigned as reviewer is evidence they've accepted the review
-   (this is the PR-188976 case: Richard/zou3519 was a reviewer and
-   commented); OR
+   while assigned as reviewer is evidence they've accepted the review; OR
 3. **was MANUALLY assigned as a reviewer by someone other than the
    author** — a real triage action, counts even if they haven't
    commented yet. If it's an easy PR you may still want to look
@@ -460,9 +458,7 @@ sign-off to merge. `greendog triage` can't detect this — it only sees
 file paths, not that the diff is ifdef-guarded — so it's a manual call.
 Acceptable resolution: add the module owner AND a merge-capable global
 approver as reviewers, then mark triaged (the "bat it to me after
-module-owner review" flow). Example: PR #191062 added a ROCm-only OCKL
-`CUDA_KERNEL_ASSERT` variant entirely inside `#if defined(USE_ROCM)` in
-`torch/headeronly/macros/Macros.h`.
+module-owner review" flow).
 
 ### Step 2: on-the-hook people must actually be reviewers
 
@@ -554,9 +550,7 @@ Key gotchas learned building this:
 
 `greendog suggest <n>` prints the suggestion (owner, share, lines,
 commits) as a dry-run; `--apply` adds them via `gh pr edit --add-reviewer`
-(skips if they're already a reviewer). Validated on PR #188996 (FP8
-blockwise scaling fix): blames 26/26 changed lines to `jananisriram`, who
-introduced blockwise FP8 scaling in Inductor — assigned as reviewer.
+(skips if they're already a reviewer).
 
 #### Cross-functional campaign PRs → route to the campaign owner, not the module owner
 
@@ -577,14 +571,13 @@ the accelerator-generalization effort that's **`fffrog`** (with the
 "Accelerator / PrivateUse1" `merge_rules` group: `guangyey`, `EikanWang`,
 `albanD` the core sponsor). How to identify the owner for a campaign:
 the PR body often @-pings them and/or references a foundational PR whose
-requested reviewers reveal the coordinator (e.g. #187650 → `fffrog`).
+requested reviewers reveal the coordinator.
 
 Caveat: these test files usually don't match the campaign's merge-rule
 patterns, so the campaign owner can't necessarily *merge* via that rule —
 but they're still the correct *reviewer*; a global approver (`albanD`)
 or the module owner co-signs the actual merge. Resolution: add the
-campaign owner as reviewer, mark triaged. Examples: #191177 (export
-test), #191162 (fsdp test_wrap) → both routed to `fffrog`.
+campaign owner as reviewer, mark triaged.
 
 #### Liveness check: don't route to people who've left (commit-recency is primary)
 
@@ -602,32 +595,25 @@ The GitHub team **`pytorch/metamates`** (~690 members, fetched via
 `gh api orgs/pytorch/teams/metamates/members --paginate --jq '.[].login'`,
 the same team `merge_rules.yaml`'s "Metamates" `*` rule expands) is a
 useful *positive* confirmation — but it is NOT a complete Meta roster: it
-has **false negatives**. Verified: `ngimel` is a current Meta employee
-(32 commits in the last 90 days, latest 2026-07-21) yet is NOT in the
-metamates team. So absence from `metamates` does NOT mean departed.
+has **false negatives** (e.g. `ngimel` is a current, active Meta employee
+yet is not in the team). So absence from `metamates` does NOT mean
+departed.
 
 Decision rule by candidate commit email:
 - **Meta email (`@fb.com`/`@meta.com`)** → CURRENT if EITHER in `metamates`
   OR has recent Meta-email commits. Conclude DEPARTED only when BOTH are
-  false (not in `metamates` AND ~0 commits in the last 90 days). Verified
-  departed: `davidberard98` (0 since 2026-04, last 2025-09) and `jamesjwu`
-  (0 since 2026-04, last 2025-11) — both not in metamates AND cold.
-  Verified current: `ngimel` (metamate=no, commits=hot), `mlazos`
-  (metamate=yes, commits=hot), `jananisriram`, `bobrenjc93`.
+  false (not in `metamates` AND ~0 commits in the last 90 days).
 - **External contributor (`@intel.com`/`@amd.com`/gmail/etc.)** →
   `metamates` doesn't apply (e.g. `fffrog` is Intel, not a metamate but
   very much active); judge them on their own recent activity / team.
 
 Fallback when the top blame owner is genuinely departed: pick the most
 recent *active* contributor on the SAME subsystem, optionally paired with
-a high-commit-volume adjacent engineer for responsiveness. Example:
-#191133 ("global scratch in static Triton launcher") blamed to the
-departed `davidberard98`/`jamesjwu`; rerouted to `jananisriram` (current
-static-launcher feature owner) + `bobrenjc93` (very active runtime
-launch-metadata). Good future `greendog suggest` enhancement: gate
-blame-derived logins on the commit-recency check above (drop only authors
-who are both cold AND not in metamates), NOT on metamates membership alone
-— that would wrongly drop live people like ngimel.
+a high-commit-volume adjacent engineer for responsiveness. Good future
+`greendog suggest` enhancement: gate blame-derived logins on the
+commit-recency check above (drop only authors who are both cold AND not
+in metamates), NOT on metamates membership alone — that would wrongly
+drop live people like ngimel.
 
 #### Double-check jansel-assigned reviewers
 
@@ -637,12 +623,9 @@ to the area, not the actual owner. When you find a PR whose only reviewer
 was requested by `jansel` (check the issue timeline
 `review_requested` actor), re-derive the owner yourself before trusting it.
 Blame the *feature* (`git log -S '<function/symbol>' -- <file>`), not just
-the changed line-region, since the line-region is often generic churn.
-Verified: #190555 ("[inductor] Partition cross-device fallbacks from CUDA
-graphs") — jansel assigned `zou3519`, whose entire graph-partition history
-was one custom-rule hook (#163310); the real owner is `BoyuanFeng`, who
-authored the whole Graph Partition feature (`should_partition`). Swapped
-`-zou3519 +BoyuanFeng`.
+the changed line-region, since the line-region is often generic churn —
+the jansel-assigned reviewer may have exactly one tangential commit in
+the area while someone else authored the whole feature.
 
 ### Triage sweeps: ALWAYS confirm before actioning
 
@@ -667,21 +650,15 @@ decorators (`@requires_gpu`, `@skipIfXpu`, `@unittest`,
 real logins. Distinguish from *inductor-XPU enablement* PRs (edit core
 `torch/_inductor/**` or bump a triton-xpu submodule) which route to
 inductor-XPU owners (`guangyey`/`EikanWang`), not the test campaign.
-First applied 2026-07-27: swept 12 PRs to `fffrog` (#191080, #191179,
-#191160, #191180, #191170, #191094, #191079, #191131, #191087, #191088,
-#191090, #191093).
 
 #### Sweep pattern B — human review-like engagement → assign the human + triage
 
-Archetype: PR #191086, where `Skylion007` (a Core Reviewer) left a
-substantive human review comment ("is there no way to optimize this fast
-path … without template bloat?"). That's real engagement → the engaged
-human should be a reviewer, and the PR gets `triaged`. Sweep the queue for
-PRs carrying evidence of **human** review-like action — a real review
-state (CHANGES_REQUESTED / COMMENTED / APPROVED) or a substantive comment
-(design question/critique), by a non-author, non-bot human. Then add that
-human as reviewer (if missing) + triage. This is the same spirit as
-`greendog triage` criterion 1, done as a manual sweep.
+Sweep the queue for PRs carrying evidence of **human** review-like
+action — a real review state (CHANGES_REQUESTED / COMMENTED / APPROVED)
+or a substantive comment (design question/critique), by a non-author,
+non-bot human. Then add that human as reviewer (if missing) + triage.
+This is the same spirit as `greendog triage` criterion 1, done as a
+manual sweep.
 Disqualifications: all bots (`pytorch-bot`, `pytorchmergebot`,
 `pytorchbot`, `facebook-github-bot`, `claude`, `*bot`) AND **jansel** —
 his `@claude review these changes` are bot automation, NOT human
