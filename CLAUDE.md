@@ -296,6 +296,37 @@ Traps to avoid when investigating CI failures:
   `test_triton_heuristics.py::TestCheckLauncherCallArgs` et al. red on all
   periodic nogpu shards.)
 
+- **`backwards_compat` red is almost never the test HUD names — it runs
+  deliberate self-check meta-tests that ALWAYS fail.** The `backwards_compat`
+  job runs `test_forward_backward_compatibility()` in `.ci/pytorch/test.sh`,
+  which does two unrelated things: (1) three failure-injection meta-tests
+  (`check_public_api_test_fails`, test.sh:~1864) that INTENTIONALLY break
+  something and assert the public-API test catches it — Step 1&2 make
+  `test_correct_module_names` fail, Step 3 `mktemp`s a module with
+  `"invalid syntax garbage"` and makes `test_modules_can_be_imported` fail;
+  each prints `Success!` on the EXPECTED failure and emits `Generating XML
+  reports...`, so a failed-XML for those two tests is written on EVERY run
+  by design. Then (2) the real C++ schema check
+  (`check_forward_backward_compatibility.py`), a plain script that emits NO
+  named-test XML. So when the job goes red for ANY reason, HUD's per-test
+  classifier latches onto the ever-present meta-test failure — usually
+  `test_modules_can_be_imported` (Step 3, runs last) — and mislabels the
+  job. This yields the classic "1 red / N green" pattern: on green commits
+  the real check passed so no test attribution surfaces; on the red commit
+  the same intentional meta-test failure gets blamed. **When you see
+  `test_modules_can_be_imported` or `test_correct_module_names` red on
+  `backwards_compat`, ignore the name — scroll to the END of the log for the
+  real cause,** typically the `check_forward_backward_compatibility.py`
+  `Broken ops: [...]` block followed by `exit code 1`. Corollary: reverting
+  a PR that changed an ATen op signature LEGITIMATELY trips this check —
+  removing an op parameter is backward-incompatible, so the reverted schema
+  no longer matches the reference. That's a real (expected) red, not a
+  flake; the clean fix is a `check_forward_backward_compatibility.py`
+  ALLOW_LIST entry in the revert. (Seen 2026-07-28: commit `569f1f64e1`
+  `Revert "Add keepdim parameter to cosine_similarity (#189654)"` →
+  `Broken ops: [aten::cosine_similarity(..., bool keepdim=False)]`,
+  HUD blamed `test_modules_can_be_imported`.)
+
 ## Marking CI jobs as unstable
 
 When a job is persistently broken and not worth blocking on, there are
