@@ -252,6 +252,24 @@ Traps to avoid when investigating CI failures:
   wrong (TD excluded it? no, `--dynamo` excluded it? no, wrong shard?
   no, it ran and passed — it's actually merge skew). Follow the evidence
   step by step.
+- **A named test can be the fall guy for a shared lazy-build/lock hang,
+  not the actual failure.** Tests that lazily build a `cpp_extension`
+  (e.g. `load_inline`) block on a build lock (`torch/utils/file_baton.py`
+  → now `filelock`). If a runner has a stale lock file, the build spins
+  forever and the WHOLE shard hangs until the ~30-min wall-clock timeout
+  kills it; pytest then marks the FIRST test that triggered the build as
+  `FAILED CONSISTENTLY`. The named test is arbitrary — it's just whichever
+  test first hit the lazy build. Tell: the traceback ends in
+  `KeyboardInterrupt` at `file_baton.py` (the spin loop) and the run
+  summary shows `NNN passed ... in ~1796s (0:29:56)`, i.e. it timed out,
+  it didn't assert-fail. This is infra, not a code regression and not a
+  bad PR — don't hunt for a culprit commit or a revert. Seen 2026-07:
+  `test_mps.py::TestBinaryIteratorConformance::test_simple_add_bfloat16_float32_float32_shape2`
+  on `macos-m2-15` runners (issue #190674, malfet; fixed by #190543
+  `a84391f`, FileBaton→filelock). Corollary: before deep-diving a HUD
+  failure, first scan whether the OWNING JOB is even red on recent trunk
+  — this one had been green for 11+ days; the HUD page was showing stale
+  pre-fix hits.
 - **A test file runs TWICE per shard: `-m '(serial)'` then
   `-m '(not serial)'`.** `run_test.py` splits each file into a serial
   invocation and a non-serial invocation, each running a DIFFERENT subset
