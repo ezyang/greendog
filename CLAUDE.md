@@ -114,6 +114,29 @@ When analyzing CI health, follow this approach:
 When a PR lands and gets autoreverted, the key question is always: why
 did CI pass pre-merge but fail post-merge? Follow this checklist.
 
+0. **First, check HOW the PR was merged — it often explains landing
+   directly.** Read the merge command and the mergebot's response before
+   theorizing. `@pytorchbot merge -i` (ignore-current) and `merge -f`
+   (force) land over red checks, so a red signal being present pre-merge
+   is not a contradiction. Pull the author's command and the mergebot's
+   "Merge started ... ignoring the following N checks" comment via
+   `gh api repos/pytorch/pytorch/issues/<n>/comments`; that comment lists
+   exactly which checks `-i` bypassed. Two tells:
+   - **Reverted signal IS in the ignored list** → a real failure was
+     visible pre-merge and dismissed (often because that job is
+     chronically flaky, e.g. m2-15 mps metal_capture SIGSEGV, so `-i` on
+     it is habitual). Dr. CI may reinforce this by bucketing it "unrelated"
+     — it keys on whether the *job* was red on the merge base, not on the
+     failure *reason*, so a new PR-caused failure in a perennially-red job
+     gets hidden.
+   - **Reverted signal is NOT in the ignored list** → the failure wasn't
+     visible pre-merge; suspect merge skew (go to item 1).
+   For ghstack, the merge command lives on the *stack-top* PR, not
+   necessarily the reverted one — the mergebot comments "Starting merge as
+   part of PR stack under #<top>" on lower PRs; follow that to find the
+   command. (Cases: #188029 stale-base skew; #186352 `-i` over a real
+   m2-15 mps regression.)
+
 (If an investigation reveals a genuinely novel, *reusable* pattern,
 propose a short CLAUDE.md addition and ask before writing it. Full
 case-specific forensics — dates, line numbers, measured rates — go in
