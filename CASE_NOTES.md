@@ -135,3 +135,52 @@ cosine_similarity (#189654)"` → `Broken ops:
 schema check (removing an op parameter is backward-incompatible); the
 clean fix is a `check_forward_backward_compatibility.py` ALLOW_LIST
 entry in the revert.
+
+## 2026-08-11: binaries red on PR #191638 — rebase triage + the nightly libtorch-extract skip
+
+Question asked: PR #191638 (libtorch-extract `needs`/`!cancelled()`) had 9
+red binary jobs; would rebasing clear them? Answer: 8 yes, 1 no.
+
+Method that settled it (generalizable): the same workflow file
+(`generated-linux-binary-manywheel-nightly.yml`) runs both on the
+`nightly` branch and on every `ciflow/binaries/<pr>` tag, so OTHER
+people's recent `ciflow/binaries` runs are a free top-of-main baseline for
+these jobs. `gh api "repos/pytorch/pytorch/actions/workflows/<file>/runs?per_page=30"`,
+then per-run `jobs?per_page=100 --paginate` and grep the job name.
+
+- The 8 `manywheel-py3_*-rocm7_14-test` reds were `ImportError:
+  libatomic.so.1: cannot open shared object file`, fixed on main by
+  #192254 `[ROCm 7.14] Install libatomic in the manywheel builder image`
+  (`6fa4b8c5749`, 2026-08-05 21:48 UTC) — ~4.6h AFTER the PR's binaries
+  run started (17:10 UTC), and not an ancestor of the PR head. Proof from
+  the baseline: nightly run 30988588492 (08-05, pre-fix) failed the exact
+  same 8 jobs; 31084446145 (08-06) and every nightly since are green.
+- `libtorch-rocm7_14-shared-with-deps-release-extract` red is real and
+  pre-existing: `OSError: librocprofiler-sdk.so.1` from
+  `ctypes.CDLL()` in `.ci/libtorch/smoke_test_extract_libtorch.py`. Fails
+  on 5/5 `ciflow/binaries` runs 08-05 → 08-11 (latest: run 31463583592,
+  job 93741372050), i.e. on current main. `rocm7_2` extract passes; only
+  7.14, added 08-04 by #190276 (TheRock wheels + RPATH) — so its libtorch
+  RPATH/bundling is broken, nothing to do with the PR.
+
+Bonus finding (the actual landing risk): **the whole libtorch-extract
+matrix is skipped on real `nightly`-branch runs, and libtorch-upload
+silently no-ops.** `get-docker-tag` is gated
+`if: github.ref_type == 'tag'`, so on branch pushes it is skipped; that
+skip propagates down (`manywheel-build` survives via
+`!failure() && !cancelled()`, but plain-`if` `libtorch-extract` does not)
+and the matrix never expands — HUD/API shows the unexpanded name
+`${{ matrix.build_name }}-extract` as `skipped`, which is the tell that a
+matrix job died before expansion. `libtorch-*-upload` already carries
+`!cancelled()`, so it runs, logs `##[error]Unable to download
+artifact(s): Artifact not found for name: libtorch-cpu-shared-with-deps-release`,
+and still reports **success**. There is no other libtorch nightly
+workflow, so libtorch nightlies are not being published from this path at
+all. Adding `!cancelled()` to extract (what #191638 does) fixes that —
+and simultaneously makes the broken rocm7_14 leg start reddening nightly
+runs that are currently green, which will look like the PR's fault.
+
+Also verified: `.github/templates/*.j2` uses a custom Jinja
+`variable_start_string="!{{"` (so GHA `${{ }}` passes through), i.e.
+`!{{ n }}` in a template is correct, not a stray `!`. Regenerating at the
+PR head produced a byte-identical diff.
