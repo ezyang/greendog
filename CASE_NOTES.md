@@ -184,3 +184,34 @@ Also verified: `.github/templates/*.j2` uses a custom Jinja
 `variable_start_string="!{{"` (so GHA `${{ }}` passes through), i.e.
 `!{{ n }}` in a template is correct, not a stray `!`. Regenerating at the
 PR head produced a byte-identical diff.
+
+**Resolution, same day.** Rebased the stack (worktree at the ghstack
+`orig` commit → `git rebase origin/main` → regenerate → amend → `ghstack`;
+PR head is now `e9440da440f` on base parent `c00fc935c96`). The rebase
+itself was conflict-free, but **regenerating after a rebase is mandatory**:
+cu13.4 had been added to main since the PR was written, so the checked-in
+generated file was stale w.r.t. its own template by exactly one line
+(`manywheel-cuda-cu134-build` missing from the extract `needs`). New
+binaries run: 31503480813.
+
+Root cause of the nightly publish outage, confirmed and quantified: Linux
+libtorch nightlies stopped at `2.14.0.dev20260629` on ALL channels (cpu,
+cu126, cu130, rocm7.2) while `libtorch-win-*` / `libtorch-macos-arm64-*`
+in the same index are current — checked by scraping
+`https://download.pytorch.org/libtorch/nightly/<channel>/` and taking the
+max `dev2026MMDD` per filename prefix. That date is the day #187174
+(`1bc58b82340`, atalman, 2026-06-29 15:43 UTC) added the tag-gated
+`get-docker-tag`. Every other job in the workflow already carries
+`!failure() && !cancelled()` / `!cancelled()` to survive that skip;
+`libtorch-extract` was the only holdout. Second half of the bug is in
+`_binary-upload.yml`: `Download Build Artifacts` has
+`continue-on-error: true` with an NB reading "Binary build jobs can only
+be skipped on CI, not nightly" — the invariant #187174 broke — and
+`Upload binaries` is gated on `steps.download-artifacts.outcome ==
+'success'`, so the leg silently no-ops and reports green.
+
+Filed: #192997 (rocm7.14 libtorch extract — ROCm libs live in the sibling
+`_rocm_sdk_core` pip package per `repair_wheel.py:rocm_rpaths()`, so
+`copy_libraries` has nothing to copy and `fix_rpath`'s flat `$ORIGIN`
+can't reach them; rocm7_2 rpath-fixes 52 libs vs 7.14's 12) and #192998
+(the publish outage). Both cross-linked from a comment on the PR.
