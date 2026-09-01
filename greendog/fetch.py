@@ -25,10 +25,16 @@ def fetch_sevs(client: HudClient) -> list[dict]:
 
 
 def fetch_hud_grid(client: HudClient, hours: int) -> dict:
-    """Walk pages until the oldest commit on a page is past the cutoff."""
+    """Walk pages until the oldest commit on a page is past the cutoff.
+
+    Each page has its own jobNames list (the set of jobs that ran on that
+    page's commits), and each row's jobs array is positionally aligned to
+    ITS page's jobNames — pages differ wildly (page 0 vs 3 shared only 6
+    positions when checked). So rows must be re-aligned onto a union name
+    list before pages can be concatenated.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    all_rows: list[dict] = []
-    job_names: list[str] = []
+    pages: list[tuple[list[str], list[dict]]] = []
     page = 0
     while page < 20:  # safety cap; ~50/page * 20 = 1000 commits
         data = client.get_json(
@@ -38,9 +44,7 @@ def fetch_hud_grid(client: HudClient, hours: int) -> dict:
         rows = data.get("shaGrid", []) or []
         if not rows:
             break
-        if not job_names:
-            job_names = data.get("jobNames", []) or []
-        all_rows.extend(rows)
+        pages.append((data.get("jobNames", []) or [], rows))
         oldest_t = rows[-1].get("time")
         if not oldest_t:
             break
@@ -48,8 +52,29 @@ def fetch_hud_grid(client: HudClient, hours: int) -> dict:
         if oldest < cutoff:
             break
         page += 1
+
+    union_names: list[str] = []
+    index: dict[str, int] = {}
+    for names, _ in pages:
+        for n in names:
+            if n not in index:
+                index[n] = len(union_names)
+                union_names.append(n)
+
+    all_rows: list[dict] = []
+    for names, rows in pages:
+        col = [index[n] for n in names]
+        for r in rows:
+            jobs = r.get("jobs") or []
+            aligned: list[dict] = [{} for _ in union_names]
+            for i, j in enumerate(jobs):
+                if i < len(col) and j:
+                    aligned[col[i]] = j
+            r["jobs"] = aligned
+            all_rows.append(r)
+
     in_window = [r for r in all_rows if _parse_time(r["time"]) >= cutoff]
-    return {"shaGrid": in_window, "jobNames": job_names, "pages_walked": page + 1}
+    return {"shaGrid": in_window, "jobNames": union_names, "pages_walked": page + 1}
 
 
 def fetch_advisor_verdicts(client: HudClient, shas: list[str]) -> list[dict]:
