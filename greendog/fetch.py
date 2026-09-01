@@ -25,10 +25,18 @@ def fetch_sevs(client: HudClient) -> list[dict]:
 
 
 def fetch_hud_grid(client: HudClient, hours: int) -> dict:
-    """Walk pages until the oldest commit on a page is past the cutoff."""
+    """Walk pages until the oldest commit on a page is past the cutoff.
+
+    Each HUD page has its OWN jobNames column ordering (and may add/drop
+    columns), so a job at index i on page 0 is not necessarily the same job at
+    index i on page 1. We remap every page's rows onto a single canonical
+    jobNames list (a superset, in first-seen order) so downstream code can
+    safely align jobs[i] with jobNames[i] across all commits.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    canonical: list[str] = []
+    col_of: dict[str, int] = {}
     all_rows: list[dict] = []
-    job_names: list[str] = []
     page = 0
     while page < 20:  # safety cap; ~50/page * 20 = 1000 commits
         data = client.get_json(
@@ -38,18 +46,35 @@ def fetch_hud_grid(client: HudClient, hours: int) -> dict:
         rows = data.get("shaGrid", []) or []
         if not rows:
             break
-        if not job_names:
-            job_names = data.get("jobNames", []) or []
-        all_rows.extend(rows)
+        page_names = data.get("jobNames", []) or []
+        for name in page_names:
+            if name not in col_of:
+                col_of[name] = len(canonical)
+                canonical.append(name)
+        # Remap each row's jobs from this page's column order to canonical.
+        for r in rows:
+            src = r.get("jobs") or []
+            remapped: list[dict] = [{} for _ in canonical]
+            for j, job in enumerate(src):
+                if j < len(page_names):
+                    remapped[col_of[page_names[j]]] = job
+            r["jobs"] = remapped
+            all_rows.append(r)
         oldest_t = rows[-1].get("time")
         if not oldest_t:
             break
-        oldest = _parse_time(oldest_t)
-        if oldest < cutoff:
+        if _parse_time(oldest_t) < cutoff:
             break
         page += 1
+    # canonical may have grown after earlier rows were remapped; pad them all
+    # to a uniform width so jobs[i] aligns with jobNames[i] for every row.
+    width = len(canonical)
+    for r in all_rows:
+        jobs = r["jobs"]
+        if len(jobs) < width:
+            jobs.extend({} for _ in range(width - len(jobs)))
     in_window = [r for r in all_rows if _parse_time(r["time"]) >= cutoff]
-    return {"shaGrid": in_window, "jobNames": job_names, "pages_walked": page + 1}
+    return {"shaGrid": in_window, "jobNames": canonical, "pages_walked": page + 1}
 
 
 def fetch_advisor_verdicts(client: HudClient, shas: list[str]) -> list[dict]:
