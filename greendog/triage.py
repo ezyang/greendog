@@ -60,6 +60,44 @@ CLAIMED_LABELS = {"mergedog"}
 # (Criterion 2 still counts these when the commenter is also a reviewer.)
 BOT_COMMAND_PREFIXES = ("@claude", "@pytorchbot", "@pytorch-bot", "@pytorchmergebot")
 
+# Keep each GraphQL response modest.  Asking `gh pr list` for 200 PRs together
+# with every PR's files, reviews, comments, and review requests intermittently
+# trips GitHub's 502 response limit.
+PR_PAGE_SIZE = 25
+MAX_PRS = 200
+
+PR_LIST_QUERY = """
+query($searchQuery: String!, $pageSize: Int!, $endCursor: String) {
+  search(
+    query: $searchQuery
+    type: ISSUE
+    first: $pageSize
+    after: $endCursor
+  ) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        author { login }
+        labels(first: 100) { nodes { name } }
+        reviewRequests(first: 100) {
+          nodes {
+            requestedReviewer {
+              ... on User { login }
+              ... on Team { slug }
+            }
+          }
+        }
+        reviews(first: 100) { nodes { author { login } } }
+        comments(first: 100) { nodes { author { login } body } }
+        files(first: 100) { nodes { path } }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
 
 def _is_bot(login: str) -> bool:
     login = (login or "").lower()
@@ -84,19 +122,60 @@ def _is_bot_command(body: str) -> bool:
 # gh-backed data access (impure; injected into adjudicate for testability)
 # ---------------------------------------------------------------------------
 
+def _flatten_pr(node: dict[str, Any]) -> dict[str, Any]:
+    """Convert GraphQL connections to the shape returned by `gh pr list`."""
+    reviewer_requests = node.get("reviewRequests", {}).get("nodes") or []
+    return {
+        "number": node["number"],
+        "title": node["title"],
+        "author": node.get("author"),
+        "labels": node.get("labels", {}).get("nodes") or [],
+        "reviewRequests": [
+            request["requestedReviewer"]
+            for request in reviewer_requests
+            if request.get("requestedReviewer")
+        ],
+        "reviews": node.get("reviews", {}).get("nodes") or [],
+        "comments": node.get("comments", {}).get("nodes") or [],
+        "files": node.get("files", {}).get("nodes") or [],
+    }
+
+
 def fetch_prs() -> list[dict]:
-    """Fetch the needs-triage queue with reviews, comments, files in one call."""
-    cmd = [
-        "gh", "pr", "list",
-        "--repo", REPO,
-        "--search", SEARCH,
-        "--state", "open",
-        "--limit", "200",
-        "--json",
-        "number,title,author,labels,reviewRequests,reviews,comments,files",
-    ]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
-    return json.loads(out)
+    """Fetch the needs-triage queue in small GraphQL pages."""
+    search_query = f"is:pr repo:{REPO} is:open {SEARCH}"
+    prs: list[dict] = []
+    cursor: str | None = None
+
+    while len(prs) < MAX_PRS:
+        variables = {
+            "searchQuery": search_query,
+            "pageSize": min(PR_PAGE_SIZE, MAX_PRS - len(prs)),
+            "endCursor": cursor,
+        }
+        payload = json.dumps({"query": PR_LIST_QUERY, "variables": variables})
+        out = subprocess.run(
+            ["gh", "api", "graphql", "--input", "-"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        search = json.loads(out)["data"]["search"]
+        prs.extend(
+            _flatten_pr(node)
+            for node in search["nodes"]
+            if node and "number" in node
+        )
+
+        page_info = search["pageInfo"]
+        if not page_info["hasNextPage"]:
+            break
+        cursor = page_info["endCursor"]
+        if not cursor:
+            raise RuntimeError("GitHub returned another page without an end cursor")
+
+    return prs[:MAX_PRS]
 
 
 def make_request_actors_resolver() -> Callable[[int], dict[str, set[str]]]:
