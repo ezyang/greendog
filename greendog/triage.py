@@ -37,6 +37,7 @@ import sys
 from typing import Any, Callable
 
 from .mergerules import make_can_merge_resolver
+from .suggest import suggest_by_rule
 
 REPO = "pytorch/pytorch"
 
@@ -254,13 +255,33 @@ def _classify_pr(
             on_the_hook[u] = "requested-reviewer"
 
     engaged = sorted(on_the_hook)
+    if engaged:
+        return {
+            "number": pr["number"], "title": pr["title"], "author": author,
+            "verdict": "mark_triaged",
+            "on_the_hook": engaged,
+            "add_reviewers": [u for u in engaged if u not in reviewers],
+            "reasons": on_the_hook,
+            "claimed_by": [],
+        }
+
+    # No engaged maintainer -- does a `greendog suggest` autorule claim it?
+    rule = suggest_by_rule(pr)
+    if rule:
+        crew = rule["reviewers"]
+        return {
+            "number": pr["number"], "title": pr["title"], "author": author,
+            "verdict": "route",
+            "on_the_hook": crew,
+            "add_reviewers": [u for u in crew if u not in reviewers],
+            "reasons": {u: f"route:{rule['rule']}" for u in crew},
+            "claimed_by": [],
+        }
+
     return {
         "number": pr["number"], "title": pr["title"], "author": author,
-        "verdict": "mark_triaged" if engaged else "needs_triage",
-        "on_the_hook": engaged,
-        "add_reviewers": [u for u in engaged if u not in reviewers],
-        "reasons": on_the_hook,
-        "claimed_by": [],
+        "verdict": "needs_triage",
+        "on_the_hook": [], "add_reviewers": [], "reasons": {}, "claimed_by": [],
     }
 
 
@@ -303,6 +324,7 @@ def cmd_triage(args) -> None:
         return
 
     mt = [r for r in results if r["verdict"] == "mark_triaged"]
+    rt = [r for r in results if r["verdict"] == "route"]
     nt = [r for r in results if r["verdict"] == "needs_triage"]
     cl = [r for r in results if r["verdict"] == "claimed"]
     ma = [r for r in results if r["verdict"] == "maintainer_authored"]
@@ -313,6 +335,13 @@ def cmd_triage(args) -> None:
         add = f"  +reviewer {','.join(r['add_reviewers'])}" if r["add_reviewers"] else ""
         print(f"  #{r['number']}  {hook}{add}")
         print(f"      {r['title'][:80]}")
+
+    if rt:
+        print(f"\n## route ({len(rt)}) — area autorule; add crew + triage")
+        for r in sorted(rt, key=lambda x: x["number"]):
+            add = f"  +reviewer {','.join(r['add_reviewers'])}" if r["add_reviewers"] else ""
+            print(f"  #{r['number']}  {next(iter(r['reasons'].values()))}{add}")
+            print(f"      {r['title'][:80]}")
 
     if ma:
         print(f"\n## maintainer_authored ({len(ma)}) — author can merge it themselves, not auto-labeled")
@@ -330,14 +359,14 @@ def cmd_triage(args) -> None:
 
     if not args.apply:
         print(
-            f"\n[dry-run] {len(mt)} PR(s) would be labeled triaged. "
+            f"\n[dry-run] {len(mt)} engaged + {len(rt)} routed PR(s) would be labeled triaged. "
             "Re-run with --apply to act.",
             file=sys.stderr,
         )
         return
 
-    print(f"\napplying to {len(mt)} PR(s)…", file=sys.stderr)
-    for r in mt:
+    print(f"\napplying to {len(mt) + len(rt)} PR(s)…", file=sys.stderr)
+    for r in mt + rt:
         try:
             _apply(r)
             add = f" +{','.join(r['add_reviewers'])}" if r["add_reviewers"] else ""

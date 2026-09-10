@@ -21,6 +21,8 @@ import subprocess
 from collections import defaultdict
 from typing import Callable
 
+from .routes import route_for
+
 REPO = "pytorch/pytorch"
 
 # Files whose history is a meaningful "who owns this logic" signal.  Tests,
@@ -52,7 +54,7 @@ def _run(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess
 def fetch_pr_meta(number: int) -> dict:
     out = _run(
         ["gh", "pr", "view", str(number), "--repo", REPO,
-         "--json", "number,title,author,files"]
+         "--json", "number,title,author,files,labels"]
     ).stdout
     return json.loads(out)
 
@@ -127,6 +129,20 @@ def _file_commit_count(pytorch_dir: str, path: str, emails: set[str]) -> int:
         if len(parts) == 2 and parts[1] in emails:
             n += 1
     return n
+
+
+def suggest_by_rule(meta: dict) -> dict | None:
+    """Stage 1 of suggestion: area autorules (greendog/routes.py).
+
+    Fires before blame.  Returns {reviewers, rule, why} when the PR's
+    labels / title / paths match a stable-owner area (ROCm crew, the
+    device-agnostic test campaign, ...), else None.  `meta` needs
+    `title`, `labels`, `files` (the shape `gh pr view --json` returns).
+    """
+    route = route_for(meta)
+    if not route:
+        return None
+    return {"reviewers": list(route.reviewers), "rule": route.name, "why": route.why}
 
 
 def suggest_reviewer(
@@ -248,7 +264,27 @@ def cmd_suggest(args) -> None:
               "(set --pytorch-dir or GREENDOG_PYTORCH_DIR)", file=sys.stderr)
         sys.exit(1)
 
-    s = suggest_reviewer(args.number, pytorch_dir)
+    meta = fetch_pr_meta(args.number)
+    rule = suggest_by_rule(meta)
+    if rule:
+        existing = _current_reviewers(args.number)
+        print(f"#{args.number} {meta['title']}")
+        print(f"  autorule '{rule['rule']}' → {', '.join(rule['reviewers'])}")
+        print(f"  ({rule['why']})")
+        missing = [u for u in rule["reviewers"] if u not in existing]
+        if not missing:
+            print("  → all already reviewers; nothing to do.")
+            return
+        if not args.apply:
+            print(f"  [dry-run] re-run with --apply to add {', '.join(missing)}.")
+            return
+        for u in missing:
+            ok, err = _add_reviewer(args.number, u)
+            print(f"  → added {u} as reviewer." if ok
+                  else f"  → FAILED to add {u}: {err}")
+        return
+
+    s = suggest_reviewer(args.number, pytorch_dir, meta=meta)
     if not s:
         print(f"#{args.number}: no clear repeat-history owner — "
               "looks easy, leaving for the triager.")

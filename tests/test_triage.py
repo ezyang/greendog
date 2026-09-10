@@ -118,3 +118,41 @@ class RequestedReviewerTest(unittest.TestCase):
             [pr], can_merge=lambda u, files: u != "author"
         )[0]
         self.assertEqual(r["verdict"], "needs_triage")
+
+
+class RouteTest(unittest.TestCase):
+    def _pr(self, title="t", labels=(), files=("test/distributed/x.py",), reviewers=()):
+        return {
+            "number": 1, "title": title, "author": {"login": "author"},
+            "labels": [{"name": l} for l in ("open source", *labels)],
+            "reviewRequests": [{"login": r} for r in reviewers],
+            "reviews": [], "comments": [],
+            "files": [{"path": p} for p in files],
+        }
+
+    def test_rocm_label_routes_to_crew(self) -> None:
+        r = triage.adjudicate([self._pr(labels=["module: rocm"])], can_merge=lambda u, f: False)[0]
+        self.assertEqual(r["verdict"], "route")
+        self.assertEqual(r["add_reviewers"], ["jeffdaily", "jithunnair-amd"])
+        self.assertEqual(r["reasons"]["jeffdaily"], "route:rocm")
+
+    def test_rocm_title_routes_and_skips_existing_reviewer(self) -> None:
+        r = triage.adjudicate(
+            [self._pr(title="[ROCm][c10d] Unskip", reviewers=["jeffdaily"])],
+            can_merge=lambda u, f: False,
+        )[0]
+        self.assertEqual(r["verdict"], "route")
+        self.assertEqual(r["add_reviewers"], ["jithunnair-amd"])
+
+    def test_engagement_beats_route(self) -> None:
+        pr = self._pr(labels=["module: rocm"], reviewers=["malfet"])
+        r = triage.adjudicate([pr], can_merge=lambda u, f: u == "malfet")[0]
+        self.assertEqual(r["verdict"], "mark_triaged")
+
+    def test_campaign_routes_to_fffrog(self) -> None:
+        r = triage.adjudicate([self._pr(title="[Testcase Refactoring] foo")], can_merge=lambda u, f: False)[0]
+        self.assertEqual(r["add_reviewers"], ["fffrog"])
+
+    def test_unrelated_pr_not_routed(self) -> None:
+        r = triage.adjudicate([self._pr(title="Fix chipmunk hippo")], can_merge=lambda u, f: False)[0]
+        self.assertEqual(r["verdict"], "needs_triage")

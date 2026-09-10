@@ -578,6 +578,25 @@ Key gotchas learned building this:
 commits) as a dry-run; `--apply` adds them via `gh pr edit --add-reviewer`
 (skips if they're already a reviewer).
 
+#### Routing autorules (stage 1 of `suggest`)
+
+Some areas have a stable crew who want *everything* in the area sent to
+them, so no blame is needed. These live as a short table in
+`greendog/routes.py` (label / title-regex / path-regex → reviewers) and
+run as the first stage of `greendog suggest` (`suggest_by_rule`), ahead
+of blame. `greendog triage` calls the same entry point: a `needs_triage`
+PR that matches becomes verdict `route` and `--apply` adds the crew +
+`triaged`. Current rules (each is an Edward-confirmed decision):
+- **rocm** → `jeffdaily`, `jithunnair-amd` (CODEOWNERS crew). Matches
+  `module: rocm`, `ciflow/rocm*`, `[ROCm]`/rocm/hip/gfxNNN/miNNN in the
+  title, or rocm/hip/hipify/miopen paths. jeffdaily's merge rule only
+  covers `**rocm**`/`**hip**` paths, so a global approver co-signs the
+  merge. (2026-09-10, #195900)
+- **device-agnostic-tests** → `fffrog`. Title matches
+  `[Testcase Refactoring]` / `hw_classification`.
+Keep the table short and high-precision; add a rule only after confirming
+with Edward.
+
 #### Cross-functional campaign PRs → route to the campaign owner, not the module owner
 
 Some PRs belong to a coordinated, repo-wide effort rather than to one
