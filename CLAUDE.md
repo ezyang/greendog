@@ -457,7 +457,11 @@ What does NOT count:
   author, added in a batch at open) is NOT evidence of acceptance.
   Criterion 3 requires a non-author, non-bot assigner. Distinguish the
   two via `gh api repos/pytorch/pytorch/issues/<n>/timeline` and reading
-  the `actor` on each `review_requested` event.
+  the `actor` on each `review_requested` event. **Exception:** an author
+  who later hand-picks ONE merge-capable reviewer (request is >2 min after
+  PR open and not part of a same-minute batch) has routed their own PR;
+  that reviewer counts (`author-picked-reviewer` in `greendog triage`).
+  Case: #195573, author requested mlazos a day after opening.
 - **Mechanical drive-bys by a non-reviewer.** `@pytorchbot fix-lint` or
   `@claude review ...` from someone who is NOT a requested reviewer is
   not engagement (see the jansel note below). These only count under

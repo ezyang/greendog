@@ -77,3 +77,44 @@ class FetchPrsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplicitAuthorRequestTest(unittest.TestCase):
+    """Criterion 3 refinement: an author's late, solitary reviewer pick counts."""
+
+    def _pr(self, created="2026-09-01T10:29:15Z"):
+        return {
+            "number": 1, "title": "t", "createdAt": created,
+            "author": {"login": "author"},
+            "labels": [{"name": "open source"}],
+            "reviewRequests": [{"login": "mlazos"}],
+            "reviews": [], "comments": [],
+            "files": [{"path": "torch/_dynamo/x.py"}],
+        }
+
+    def _classify(self, events):
+        return triage.adjudicate(
+            [self._pr()],
+            can_merge=lambda u, files: u == "mlazos",
+            request_actors=lambda n: events,
+        )[0]
+
+    def test_late_solo_author_pick_counts(self) -> None:
+        r = self._classify({"mlazos": {("author", "2026-09-02T12:59:43Z")}})
+        self.assertEqual(r["verdict"], "mark_triaged")
+        self.assertEqual(r["reasons"]["mlazos"], "author-picked-reviewer")
+
+    def test_open_time_request_is_codeowner_noise(self) -> None:
+        r = self._classify({"mlazos": {("author", "2026-09-01T10:29:16Z")}})
+        self.assertEqual(r["verdict"], "needs_triage")
+
+    def test_late_batch_is_codeowner_noise(self) -> None:
+        r = self._classify({
+            "mlazos": {("author", "2026-09-02T12:59:43Z")},
+            "someone": {("author", "2026-09-02T12:59:44Z")},
+        })
+        self.assertEqual(r["verdict"], "needs_triage")
+
+    def test_non_author_request_still_manual(self) -> None:
+        r = self._classify({"mlazos": {("triager", "2026-09-01T10:29:16Z")}})
+        self.assertEqual(r["reasons"]["mlazos"], "manual-reviewer")
