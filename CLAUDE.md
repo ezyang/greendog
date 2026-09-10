@@ -630,8 +630,15 @@ Blame/history-based suggestion routinely names the plurality author of the
 touched code — but that person may have LEFT. Before assigning a
 blame-derived reviewer, verify they're still around.
 
-**The reliable signal is recent commit activity under the person's Meta
-email**, NOT team membership. Check:
+**Cheapest reliable signal: repo permission.** `gh api
+repos/pytorch/pytorch/collaborators/<login>/permission` — people who
+leave Meta drop to `read` (seen 2026-09-10: XilunWu, colesbury,
+davidberard98, zhxchen17, mengluy), and `read` can't be requested as a
+reviewer anyway, so `greendog suggest` now skips them (`eligible=`).
+`write` doesn't prove *active* though (peterbell10, lezcano, fritzo still
+have it), so for a write-access candidate the next check is
+**recent commit activity under the person's Meta email**, NOT team
+membership. Check:
 `git log --since=<~90 days ago> --author='<email>' --oneline | wc -l`
 (and eyeball the latest commit date). Recent `@meta.com`/`@fb.com` commits
 ⇒ still at Meta, full stop.

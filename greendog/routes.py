@@ -18,6 +18,19 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
+def is_bot(login: str) -> bool:
+    login = (login or "").lower()
+    return login.endswith("bot") or login.endswith("[bot]") or login in {
+        "claude",
+        "facebook-github-bot",
+        "codecov",
+        # Mechanical/app actors that leave review-like artifacts but are not
+        # human engagement: the CLA signing check and GitHub Copilot's
+        # automated PR reviewer.
+        "linux-foundation-easycla",
+        "copilot-pull-request-reviewer",
+    }
+
 
 @dataclass(frozen=True)
 class Route:

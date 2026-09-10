@@ -22,6 +22,7 @@ from collections import defaultdict
 from typing import Callable
 
 from .routes import route_for
+from .routes import is_bot as _is_bot
 
 REPO = "pytorch/pytorch"
 
@@ -151,6 +152,7 @@ def suggest_reviewer(
     resolve_login: Callable[[str], str | None] | None = None,
     meta: dict | None = None,
     hunks: dict[str, list[tuple[int, int]]] | None = None,
+    eligible: Callable[[str], bool] | None = None,
 ) -> dict | None:
     """Return a reviewer suggestion, or None if no clear repeat-history owner.
 
@@ -176,6 +178,11 @@ def suggest_reviewer(
         for email, c in _blame_line_owners(pytorch_dir, path, hunks.get(path, [])).items():
             total_blamed += c
             login = resolve_login(email)
+            if login and _is_bot(login):
+                # Reverts/relands are committed by pytorchmergebot; those lines
+                # say nothing about ownership.  Don't count them either way.
+                total_blamed -= c
+                continue
             if login:
                 lines_by_login[login] += c
                 emails_by_login[login].add(email)
@@ -188,6 +195,10 @@ def suggest_reviewer(
         ((lg, n) for lg, n in lines_by_login.items() if lg != author),
         key=lambda x: -x[1],
     )
+    # Skip owners who can't be requested (no write access -- the usual tell
+    # that a blame-plurality author has since left; see CLAUDE.md liveness).
+    if eligible is not None:
+        ranked = [(lg, n) for lg, n in ranked if eligible(lg)]
     if not ranked:
         return None
     owner, owner_lines = ranked[0]
@@ -237,14 +248,16 @@ def _current_reviewers(number: int) -> list[str]:
 
 
 def _is_collaborator(login: str) -> bool:
-    """Whether `login` can be requested as a reviewer (repo collaborator).
+    """Whether `login` can be requested as a reviewer (write access or more).
 
-    Review requests only work for collaborators; the git-history owner may be a
-    past contributor who no longer is one, so check before trying to add.
+    The permission endpoint answers `read` for anyone on a public repo, so
+    that isn't enough: `gh pr edit --add-reviewer` refuses them.  Write
+    access is also the cleanest liveness signal we have -- people who leave
+    Meta drop to `read` (XilunWu, colesbury, davidberard98, ... 2026-09-10).
     """
-    r = _run(["gh", "api", f"repos/{REPO}/collaborators/{login}",
-              "--silent"])
-    return r.returncode == 0
+    r = _run(["gh", "api", f"repos/{REPO}/collaborators/{login}/permission",
+              "--jq", ".permission"])
+    return r.returncode == 0 and r.stdout.strip() in {"write", "maintain", "admin"}
 
 
 def _add_reviewer(number: int, login: str) -> tuple[bool, str]:
@@ -284,7 +297,7 @@ def cmd_suggest(args) -> None:
                   else f"  → FAILED to add {u}: {err}")
         return
 
-    s = suggest_reviewer(args.number, pytorch_dir, meta=meta)
+    s = suggest_reviewer(args.number, pytorch_dir, meta=meta, eligible=_is_collaborator)
     if not s:
         print(f"#{args.number}: no clear repeat-history owner — "
               "looks easy, leaving for the triager.")

@@ -37,6 +37,7 @@ import sys
 from typing import Any, Callable
 
 from .mergerules import make_can_merge_resolver
+from .routes import is_bot as _is_bot
 from .suggest import suggest_by_rule
 
 REPO = "pytorch/pytorch"
@@ -101,18 +102,6 @@ query($searchQuery: String!, $pageSize: Int!, $endCursor: String) {
 """
 
 
-def _is_bot(login: str) -> bool:
-    login = (login or "").lower()
-    return login.endswith("bot") or login.endswith("[bot]") or login in {
-        "claude",
-        "facebook-github-bot",
-        "codecov",
-        # Mechanical/app actors that leave review-like artifacts but are not
-        # human engagement: the CLA signing check and GitHub Copilot's
-        # automated PR reviewer.
-        "linux-foundation-easycla",
-        "copilot-pull-request-reviewer",
-    }
 
 
 def _is_bot_command(body: str) -> bool:
