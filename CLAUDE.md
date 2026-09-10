@@ -446,22 +446,22 @@ A PR hits the bar (→ `mark_triaged`) when a person who can merge THIS PR
 2. **is a requested reviewer AND left any comment at all** — even a
    mechanical bot command like `@claude review this please`. Commenting
    while assigned as reviewer is evidence they've accepted the review; OR
-3. **was MANUALLY assigned as a reviewer by someone other than the
-   author** — a real triage action, counts even if they haven't
-   commented yet. If it's an easy PR you may still want to look
-   personally to help move it along.
+3. **is a requested reviewer at all** — however they got there: manual
+   triage, the author's own pick, or CODEOWNERS auto-assignment. The
+   codeowners are the people who can and should land the PR, so a silent
+   codeowner-assigned merger still means the PR has an owner (decision
+   2026-09-10; e.g. #195633 → janeyx99/albanD via `/torch/optim/`). If
+   it's an easy PR you may still want to look personally to help move it
+   along. Caveat: this puts silent load on heavy codeowners (albanD got
+   21 of 48 in the first sweep) — watch that it doesn't become a dumping
+   ground.
 
 What does NOT count:
-- **Codeowner / author auto-assignment.** A silent reviewer who was
-  auto-added (the `review_requested` timeline event's `actor` is the PR
-  author, added in a batch at open) is NOT evidence of acceptance.
-  Criterion 3 requires a non-author, non-bot assigner. Distinguish the
-  two via `gh api repos/pytorch/pytorch/issues/<n>/timeline` and reading
-  the `actor` on each `review_requested` event. **Exception:** an author
-  who later hand-picks ONE merge-capable reviewer (request is >2 min after
-  PR open and not part of a same-minute batch) has routed their own PR;
-  that reviewer counts (`author-picked-reviewer` in `greendog triage`).
-  Case: #195573, author requested mlazos a day after opening.
+- **A requested reviewer who can't merge this PR.** Merge rights are
+  path-scoped (see above); a requested reviewer outside the applicable
+  `merge_rules` entry is not an owner. Neither is a rando reviewer with
+  a high review volume (e.g. `sylvesterkaczmarek`) — that pattern is
+  LLM-agent spam, not engagement.
 - **Mechanical drive-bys by a non-reviewer.** `@pytorchbot fix-lint` or
   `@claude review ...` from someone who is NOT a requested reviewer is
   not engagement (see the jansel note below). These only count under
@@ -518,12 +518,11 @@ encodes the three criteria and their exclusions as code: "can merge this
 PR" via `mergerules.py` (fetches `merge_rules.yaml` once, ports
 trymerge's `patterns_to_regex` + "all files match", expands teams), the
 three engagement criteria in `_classify_pr`, the bot-command filter
-(`BOT_COMMAND_PREFIXES`), the claimed-label skip (`CLAIMED_LABELS`), and
-manual-vs-codeowner reviewer provenance via the issue timeline
-(`make_request_actors_resolver`, fetched lazily only when a silent
-merger is a pending reviewer). The two impure resolvers (`can_merge`,
-`request_actors`) are injected into `adjudicate` so the classification
-logic is unit-testable without network. Needs `gh pr list --json ...,files`
+(`BOT_COMMAND_PREFIXES`), and the claimed-label skip (`CLAIMED_LABELS`).
+The impure `can_merge` resolver is injected into `adjudicate` so the
+classification logic is unit-testable without network. (Reviewer
+provenance via the issue timeline was removed 2026-09-10 once codeowner
+assignment started counting as engagement.) Needs `gh pr list --json ...,files`
 so each PR's changed files are available for the scoped merge check.
 
 `greendog triage` prints a dry-run table (with the criterion that fired

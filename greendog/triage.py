@@ -32,7 +32,6 @@ over-count people who can't merge the PR in question.  See CLAUDE.md
 from __future__ import annotations
 
 import json
-from datetime import datetime
 import subprocess
 import sys
 from typing import Any, Callable
@@ -181,84 +180,6 @@ def fetch_prs() -> list[dict]:
     return prs[:MAX_PRS]
 
 
-def make_request_actors_resolver() -> Callable[[int], dict[str, set[tuple[str, str]]]]:
-    """Return `request_actors(pr_number) -> {reviewer: {(actor, created_at)}}`.
-
-    Reads the issue timeline; used only to tell manual reviewer assignment
-    from codeowner/author auto-assignment.  Cached per PR.
-    """
-    cache: dict[int, dict[str, set[tuple[str, str]]]] = {}
-
-    def request_actors(pr_number: int) -> dict[str, set[tuple[str, str]]]:
-        if pr_number not in cache:
-            r = subprocess.run(
-                ["gh", "api", f"repos/{REPO}/issues/{pr_number}/timeline",
-                 "--paginate", "--jq",
-                 '.[] | select(.event=="review_requested") | '
-                 '{actor:(.actor.login // ""), '
-                 'reviewer:(.requested_reviewer.login // ""), '
-                 'at:(.created_at // "")}'],
-                capture_output=True, text=True,
-            )
-            mapping: dict[str, set[tuple[str, str]]] = {}
-            if r.returncode == 0:
-                for line in r.stdout.splitlines():
-                    if not line.strip():
-                        continue
-                    ev = json.loads(line)
-                    rev, act = ev.get("reviewer"), ev.get("actor")
-                    if rev:
-                        mapping.setdefault(rev, set()).add((act or "", ev.get("at") or ""))
-            cache[pr_number] = mapping
-        return cache[pr_number]
-
-    return request_actors
-
-
-# An author-made review request is normally codeowner auto-assignment (GitHub
-# records the PR author as the actor) and carries no triage signal.  But an
-# author who later hand-picks ONE merge-capable reviewer has effectively
-# routed their own PR, and that person is on the hook.  Codeowner batches
-# happen at open time (or on a push) and request several people in the same
-# instant; an explicit pick is late and solitary.
-EXPLICIT_REQUEST_MIN_AGE_S = 120
-
-
-def _explicit_author_request(
-    reviewer: str,
-    author: str,
-    created_at: str | None,
-    actors: dict[str, set[tuple[str, str]]],
-) -> bool:
-    if not created_at:
-        return False
-    try:
-        opened = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    for act, at in actors.get(reviewer, set()):
-        if act != author or not at:
-            continue
-        try:
-            t = datetime.fromisoformat(at.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if (t - opened).total_seconds() < EXPLICIT_REQUEST_MIN_AGE_S:
-            continue
-        # Solitary: no other reviewer was requested by the author at the same
-        # minute (that pattern is a codeowner batch on a push).
-        batch = sum(
-            1
-            for other, evs in actors.items()
-            if other != reviewer
-            for a2, at2 in evs
-            if a2 == author and at2[:16] == at[:16]
-        )
-        if batch == 0:
-            return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # adjudication (pure, given the two resolvers)
 # ---------------------------------------------------------------------------
@@ -266,7 +187,6 @@ def _explicit_author_request(
 def _classify_pr(
     pr: dict,
     can_merge: Callable[[str, list[str]], bool],
-    request_actors: Callable[[int], dict[str, set[tuple[str, str]]]],
 ) -> dict:
     author = (pr.get("author") or {}).get("login")
     labels = {l["name"] for l in (pr.get("labels") or [])}
@@ -320,23 +240,18 @@ def _classify_pr(
     mergers = {u for u in candidates if can_merge(u, files)}
 
     on_the_hook: dict[str, str] = {}  # user -> criterion label
-    need_timeline = any(
-        u in reviewers and u not in left_any for u in mergers
-    )
-    actors = request_actors(pr["number"]) if need_timeline else {}
-
     for u in sorted(mergers):
         if u in left_substantive:
             on_the_hook[u] = "substantive"          # criterion 1
         elif u in reviewers and u in left_any:
             on_the_hook[u] = "reviewer+commented"   # criterion 2
         elif u in reviewers:
-            # criterion 3: manual assignment (some actor other than author/bot)
-            assigners = {a for a, _ in actors.get(u, set())}
-            if any(a and a != author and not _is_bot(a) for a in assigners):
-                on_the_hook[u] = "manual-reviewer"
-            elif _explicit_author_request(u, author, pr.get("createdAt"), actors):
-                on_the_hook[u] = "author-picked-reviewer"
+            # criterion 3: a merge-capable requested reviewer is on the hook
+            # however they got there -- manual triage, the author's own pick,
+            # or CODEOWNERS.  Codeowner auto-assignment used to be excluded as
+            # noise, but the codeowners ARE the people who can and should land
+            # these PRs (decision 2026-09-10, e.g. #195633 -> janeyx99/albanD).
+            on_the_hook[u] = "requested-reviewer"
 
     engaged = sorted(on_the_hook)
     return {
@@ -352,14 +267,11 @@ def _classify_pr(
 def adjudicate(
     prs: list[dict],
     can_merge: Callable[[str, list[str]], bool] | None = None,
-    request_actors: Callable[[int], dict[str, set[tuple[str, str]]]] | None = None,
 ) -> list[dict]:
-    """Classify each PR.  Resolvers default to the live gh-backed ones."""
+    """Classify each PR.  The resolver defaults to the live gh-backed one."""
     if can_merge is None:
         can_merge = make_can_merge_resolver()
-    if request_actors is None:
-        request_actors = make_request_actors_resolver()
-    return [_classify_pr(pr, can_merge, request_actors) for pr in prs]
+    return [_classify_pr(pr, can_merge) for pr in prs]
 
 
 # ---------------------------------------------------------------------------

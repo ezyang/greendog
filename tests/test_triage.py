@@ -79,42 +79,42 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class ExplicitAuthorRequestTest(unittest.TestCase):
-    """Criterion 3 refinement: an author's late, solitary reviewer pick counts."""
+class RequestedReviewerTest(unittest.TestCase):
+    """Criterion 3: any merge-capable requested reviewer is on the hook."""
 
-    def _pr(self, created="2026-09-01T10:29:15Z"):
+    def _pr(self, reviewers):
         return {
-            "number": 1, "title": "t", "createdAt": created,
+            "number": 1, "title": "t",
             "author": {"login": "author"},
             "labels": [{"name": "open source"}],
-            "reviewRequests": [{"login": "mlazos"}],
+            "reviewRequests": [{"login": r} for r in reviewers],
             "reviews": [], "comments": [],
-            "files": [{"path": "torch/_dynamo/x.py"}],
+            "files": [{"path": "torch/optim/x.py"}],
         }
 
-    def _classify(self, events):
-        return triage.adjudicate(
-            [self._pr()],
-            can_merge=lambda u, files: u == "mlazos",
-            request_actors=lambda n: events,
+    def test_codeowner_assigned_merger_counts(self) -> None:
+        r = triage.adjudicate(
+            [self._pr(["janeyx99", "albanD"])],
+            can_merge=lambda u, files: u in {"janeyx99", "albanD"},
         )[0]
-
-    def test_late_solo_author_pick_counts(self) -> None:
-        r = self._classify({"mlazos": {("author", "2026-09-02T12:59:43Z")}})
         self.assertEqual(r["verdict"], "mark_triaged")
-        self.assertEqual(r["reasons"]["mlazos"], "author-picked-reviewer")
+        self.assertEqual(r["on_the_hook"], ["albanD", "janeyx99"])
+        self.assertEqual(r["reasons"]["janeyx99"], "requested-reviewer")
+        self.assertEqual(r["add_reviewers"], [])
 
-    def test_open_time_request_is_codeowner_noise(self) -> None:
-        r = self._classify({"mlazos": {("author", "2026-09-01T10:29:16Z")}})
+    def test_non_merger_reviewer_does_not_count(self) -> None:
+        r = triage.adjudicate(
+            [self._pr(["sylvesterkaczmarek"])],
+            can_merge=lambda u, files: False,
+        )[0]
         self.assertEqual(r["verdict"], "needs_triage")
 
-    def test_late_batch_is_codeowner_noise(self) -> None:
-        r = self._classify({
-            "mlazos": {("author", "2026-09-02T12:59:43Z")},
-            "someone": {("author", "2026-09-02T12:59:44Z")},
-        })
+    def test_author_as_reviewer_ignored(self) -> None:
+        # Author can't merge (else it's maintainer_authored); a self-request
+        # must not count as engagement.
+        pr = self._pr(["author"])
+        pr["reviews"] = [{"author": {"login": "author"}}]
+        r = triage.adjudicate(
+            [pr], can_merge=lambda u, files: u != "author"
+        )[0]
         self.assertEqual(r["verdict"], "needs_triage")
-
-    def test_non_author_request_still_manual(self) -> None:
-        r = self._classify({"mlazos": {("triager", "2026-09-01T10:29:16Z")}})
-        self.assertEqual(r["reasons"]["mlazos"], "manual-reviewer")
