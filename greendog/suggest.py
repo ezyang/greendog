@@ -23,6 +23,7 @@ from typing import Callable
 
 from .routes import route_for
 from .routes import is_bot as _is_bot
+from .reviewers import ReviewerKB, status_of
 
 REPO = "pytorch/pytorch"
 
@@ -247,19 +248,6 @@ def _current_reviewers(number: int) -> list[str]:
     return [r for r in out.split(",") if r]
 
 
-def _is_collaborator(login: str) -> bool:
-    """Whether `login` can be requested as a reviewer (write access or more).
-
-    The permission endpoint answers `read` for anyone on a public repo, so
-    that isn't enough: `gh pr edit --add-reviewer` refuses them.  Write
-    access is also the cleanest liveness signal we have -- people who leave
-    Meta drop to `read` (XilunWu, colesbury, davidberard98, ... 2026-09-10).
-    """
-    r = _run(["gh", "api", f"repos/{REPO}/collaborators/{login}/permission",
-              "--jq", ".permission"])
-    return r.returncode == 0 and r.stdout.strip() in {"write", "maintain", "admin"}
-
-
 def _add_reviewer(number: int, login: str) -> tuple[bool, str]:
     """Request `login` as reviewer via REST (surfaces a real error, unlike
     `gh pr edit`, which exits 0 even when GitHub rejects the request)."""
@@ -297,9 +285,22 @@ def cmd_suggest(args) -> None:
                   else f"  → FAILED to add {u}: {err}")
         return
 
-    s = suggest_reviewer(args.number, pytorch_dir, meta=meta, eligible=_is_collaborator)
+    # Liveness comes from the reviewer knowledgebase (reviewers.json): a
+    # blame owner is only eligible if they are *actively reviewing*, not
+    # merely still holding write access.  Observations are persisted so the
+    # base grows with every PR we look at.
+    kb = ReviewerKB()
+    try:
+        s = suggest_reviewer(args.number, pytorch_dir, meta=meta, eligible=kb.eligible)
+    finally:
+        kb.save()
+    skipped = [(lg, st, why) for lg, st, why in kb.consulted if st != "active"]
+    if skipped:
+        print("  blame candidates skipped (not actively reviewing):")
+        for lg, st, why in skipped:
+            print(f"    {lg}: {st} — {why}")
     if not s:
-        print(f"#{args.number}: no clear repeat-history owner — "
+        print(f"#{args.number}: no clear, active repeat-history owner — "
               "looks easy, leaving for the triager.")
         return
 
@@ -308,16 +309,14 @@ def cmd_suggest(args) -> None:
     print(f"  suggested reviewer: {s['reviewer']}  "
           f"(wrote {s['lines']}/{s['blamed']} changed core lines = {s['share']}, "
           f"{s['commits']} commits to these files)")
+    _, why = status_of(kb.record(s["reviewer"]) or {})
+    print(f"  activity: {why}")
     print(f"  core files: {', '.join(s['files'])}")
     if existing:
         print(f"  already has reviewers: {', '.join(existing)}")
 
     if s["reviewer"] in existing:
         print("  → already a reviewer; nothing to do.")
-        return
-    if not _is_collaborator(s["reviewer"]):
-        print(f"  → {s['reviewer']} is not a pytorch/pytorch collaborator and "
-              "cannot be requested as a reviewer; leaving for the triager.")
         return
     if not args.apply:
         print("  [dry-run] re-run with --apply to add this reviewer.")

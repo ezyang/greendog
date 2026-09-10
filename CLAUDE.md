@@ -661,11 +661,26 @@ Decision rule by candidate commit email:
 
 Fallback when the top blame owner is genuinely departed: pick the most
 recent *active* contributor on the SAME subsystem, optionally paired with
-a high-commit-volume adjacent engineer for responsiveness. Good future
-`greendog suggest` enhancement: gate blame-derived logins on the
-commit-recency check above (drop only authors who are both cold AND not
-in metamates), NOT on metamates membership alone — that would wrongly
-drop live people like ngimel.
+a high-commit-volume adjacent engineer for responsiveness.
+
+**Implemented: the reviewer knowledgebase (`reviewers.json` +
+`greendog/reviewers.py`).** `greendog suggest` no longer gates blame
+candidates on write access alone; it asks the knowledgebase whether the
+person is *actively reviewing*. Per login it records observed GitHub
+activity — PRs reviewed in the last 90 days (`reviewed-by:` search),
+open review requests pending on them (load), commits in the window, repo
+permission — and derives `active` (≥3 reviews/90d), `cold` (has access,
+isn't reviewing; commits alone don't count) or `departed` (no write
+access). Records go stale after 14 days and are re-observed lazily, each
+observation is appended to a per-login `history`, and the file is
+committed so the base accumulates across sessions. `suggest` prints the
+candidates it skipped and why. Manual overrides with a note win over the
+derived status (`greendog reviewers set <login> --status active --note
+"..."`, `--clear` to remove); `greendog reviewers show|refresh [logins]`
+to inspect/update. People with ≥100 pending requests are flagged
+OVERLOADED but not excluded. Search API budget is 30 calls/min (two per
+observation); refresh backs off on rate limit and never persists a failed
+observation.
 
 #### Double-check jansel-assigned reviewers
 
