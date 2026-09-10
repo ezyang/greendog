@@ -23,7 +23,7 @@ from typing import Callable
 
 from .routes import route_for
 from .routes import is_bot as _is_bot
-from .reviewers import ReviewerKB, status_of
+from .reviewers import ReviewerKB, status_of, is_overloaded, area_overlap
 
 REPO = "pytorch/pytorch"
 
@@ -309,8 +309,17 @@ def cmd_suggest(args) -> None:
     print(f"  suggested reviewer: {s['reviewer']}  "
           f"(wrote {s['lines']}/{s['blamed']} changed core lines = {s['share']}, "
           f"{s['commits']} commits to these files)")
-    _, why = status_of(kb.record(s["reviewer"]) or {})
+    rec = kb.record(s["reviewer"]) or {}
+    _, why = status_of(rec)
     print(f"  activity: {why}")
+    if is_overloaded(rec):
+        hits = area_overlap(rec, s["files"])
+        if hits:
+            print("  in their wheelhouse: " + ", ".join(f"{a} ({n} recent PRs)" for a, n in hits))
+        elif rec.get("profile"):
+            print("  NOT in their recently-reviewed areas — consider someone else.")
+        else:
+            print(f"  (no area profile yet; run `greendog reviewers profile {s['reviewer']}`)")
     print(f"  core files: {', '.join(s['files'])}")
     if existing:
         print(f"  already has reviewers: {', '.join(existing)}")

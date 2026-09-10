@@ -133,13 +133,16 @@ def main():
     p_rev = sub.add_parser(
         "reviewers", help="reviewer activity knowledgebase (reviewers.json)"
     )
-    p_rev.add_argument("action", choices=["show", "refresh", "set"],
-                       help="show records | refresh observations | set a manual override")
+    p_rev.add_argument("action", choices=["show", "refresh", "set", "profile"],
+                       help="show records | refresh observations | set a manual override | "
+                            "rebuild area profile (revealed preference)")
     p_rev.add_argument("logins", nargs="*", help="GitHub logins (default: all known)")
     p_rev.add_argument("--force", action="store_true", help="refresh even if fresh")
     p_rev.add_argument("--status", choices=["active", "cold", "departed"],
                        help="(set) pinned status")
     p_rev.add_argument("--note", help="(set) why the override exists")
+    p_rev.add_argument("--overloaded", choices=["yes", "no"],
+                       help="(set) pin the overloaded flag regardless of pending count")
     p_rev.add_argument("--clear", action="store_true", help="(set) remove the override")
     p_rev.set_defaults(func=cmd_reviewers)
 

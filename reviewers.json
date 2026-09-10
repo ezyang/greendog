@@ -9,8 +9,7 @@
       "pending": 58,
       "permission": "write",
       "reviews_90d": 106
-    },
-    "status": "active"
+    }
   },
   "MagiaSN": {
     "history": [],
@@ -22,8 +21,7 @@
       "pending": 0,
       "permission": "read",
       "reviews_90d": 0
-    },
-    "status": "departed"
+    }
   },
   "SirLegolot": {
     "history": [],
@@ -35,8 +33,7 @@
       "pending": 0,
       "permission": "read",
       "reviews_90d": 0
-    },
-    "status": "departed"
+    }
   },
   "Skylion007": {
     "history": [],
@@ -48,8 +45,7 @@
       "pending": 115,
       "permission": "write",
       "reviews_90d": 1269
-    },
-    "status": "active"
+    }
   },
   "XilunWu": {
     "history": [],
@@ -61,8 +57,7 @@
       "pending": 0,
       "permission": "read",
       "reviews_90d": 0
-    },
-    "status": "departed"
+    }
   },
   "XuehaiPan": {
     "history": [],
@@ -74,8 +69,7 @@
       "pending": 7,
       "permission": "write",
       "reviews_90d": 9
-    },
-    "status": "active"
+    }
   },
   "aakhundov": {
     "history": [],
@@ -87,8 +81,7 @@
       "pending": 0,
       "permission": "read",
       "reviews_90d": 1
-    },
-    "status": "departed"
+    }
   },
   "albanD": {
     "history": [],
@@ -101,7 +94,42 @@
       "permission": "admin",
       "reviews_90d": 382
     },
-    "status": "active"
+    "override": {
+      "date": "2026-09-10",
+      "note": "genuinely overloaded; only rope in on areas in his profile (Edward 2026-09-10)",
+      "overloaded": true
+    },
+    "profile": {
+      "areas": {
+        "(root)": 12,
+        ".ci/pytorch": 3,
+        ".github/workflows": 4,
+        "aten/src/ATen": 19,
+        "c10/core": 5,
+        "c10/cuda": 4,
+        "c10/util": 6,
+        "cmake": 4,
+        "docs/source": 5,
+        "test": 27,
+        "test/distributed/checkpoint": 3,
+        "test/dynamo": 4,
+        "test/fx": 5,
+        "test/inductor": 6,
+        "tools/linter/adapters": 3,
+        "tools/native_aot": 8,
+        "tools/test": 11,
+        "torch": 10,
+        "torch/_C": 4,
+        "torch/csrc": 12,
+        "torch/csrc/api": 5,
+        "torch/csrc/autograd": 9,
+        "torch/csrc/utils": 8,
+        "torch/testing/_internal": 11,
+        "torchgen": 5
+      },
+      "profiled_at": "2026-09-10",
+      "sample": 100
+    }
   },
   "angelayi": {
     "history": [],
@@ -113,8 +141,7 @@
       "pending": 88,
       "permission": "write",
       "reviews_90d": 54
-    },
-    "status": "active"
+    }
   },
   "colesbury": {
     "history": [],
@@ -126,8 +153,7 @@
       "pending": 1,
       "permission": "read",
       "reviews_90d": 4
-    },
-    "status": "departed"
+    }
   },
   "davidberard98": {
     "history": [],
@@ -139,8 +165,7 @@
       "pending": 0,
       "permission": "read",
       "reviews_90d": 0
-    },
-    "status": "departed"
+    }
   },
   "ezyang": {
     "history": [],
@@ -153,7 +178,37 @@
       "permission": "admin",
       "reviews_90d": 304
     },
-    "status": "active"
+    "profile": {
+      "areas": {
+        "(root)": 7,
+        "aten/src/ATen": 21,
+        "c10/core": 9,
+        "c10/util": 5,
+        "test": 30,
+        "test/distributed/_composable": 4,
+        "test/distributed/tensor": 4,
+        "test/dynamo": 14,
+        "test/dynamo_expected_failures": 4,
+        "test/export": 4,
+        "test/functorch": 8,
+        "test/inductor": 10,
+        "test/profiler": 4,
+        "torch": 10,
+        "torch/_C": 4,
+        "torch/_dynamo": 4,
+        "torch/_dynamo/variables": 6,
+        "torch/_functorch": 5,
+        "torch/_functorch/_aot_autograd": 5,
+        "torch/_inductor": 6,
+        "torch/_subclasses": 5,
+        "torch/csrc/autograd": 5,
+        "torch/cuda": 5,
+        "torch/fx/experimental": 5,
+        "torch/utils": 5
+      },
+      "profiled_at": "2026-09-10",
+      "sample": 100
+    }
   },
   "fffrog": {
     "history": [],
@@ -166,7 +221,42 @@
       "permission": "write",
       "reviews_90d": 369
     },
-    "status": "active"
+    "override": {
+      "date": "2026-09-10",
+      "note": "high pending count is the device-agnostic test campaign: many near-identical PRs, not real overload (Edward 2026-09-10)",
+      "overloaded": false
+    },
+    "profile": {
+      "areas": {
+        "test": 13,
+        "test/ao/sparsity": 3,
+        "test/cpp_extensions/open_registration_extension": 4,
+        "test/distributed": 7,
+        "test/distributed/_composable": 1,
+        "test/distributed/checkpoint": 7,
+        "test/distributed/elastic": 2,
+        "test/distributed/fsdp": 7,
+        "test/distributed/launcher": 1,
+        "test/distributed/optim": 1,
+        "test/distributed/pipelining": 2,
+        "test/distributed/tensor": 3,
+        "test/distributions": 1,
+        "test/dynamo": 7,
+        "test/export": 5,
+        "test/functorch": 3,
+        "test/functorch/dim": 1,
+        "test/fx": 10,
+        "test/higher_order_ops": 2,
+        "test/inductor": 17,
+        "test/onnx": 2,
+        "test/onnx/exporter": 2,
+        "test/onnx/internal": 1,
+        "test/quantization/eager": 2,
+        "torch/testing/_internal": 7
+      },
+      "profiled_at": "2026-09-10",
+      "sample": 100
+    }
   },
   "fritzo": {
     "history": [],
@@ -178,8 +268,7 @@
       "pending": 0,
       "permission": "write",
       "reviews_90d": 4
-    },
-    "status": "active"
+    }
   },
   "guangyey": {
     "history": [],
@@ -191,8 +280,7 @@
       "pending": 15,
       "permission": "write",
       "reviews_90d": 215
-    },
-    "status": "active"
+    }
   },
   "janeyx99": {
     "history": [],
@@ -204,8 +292,7 @@
       "pending": 63,
       "permission": "write",
       "reviews_90d": 180
-    },
-    "status": "active"
+    }
   },
   "jansel": {
     "history": [],
@@ -217,8 +304,7 @@
       "pending": 84,
       "permission": "write",
       "reviews_90d": 795
-    },
-    "status": "active"
+    }
   },
   "jeffdaily": {
     "history": [],
@@ -230,8 +316,7 @@
       "pending": 39,
       "permission": "write",
       "reviews_90d": 248
-    },
-    "status": "active"
+    }
   },
   "jhavukainen": {
     "history": [],
@@ -243,8 +328,7 @@
       "pending": 1,
       "permission": "write",
       "reviews_90d": 35
-    },
-    "status": "active"
+    }
   },
   "jithunnair-amd": {
     "history": [],
@@ -256,8 +340,7 @@
       "pending": 37,
       "permission": "write",
       "reviews_90d": 47
-    },
-    "status": "active"
+    }
   },
   "kiszk": {
     "history": [],
@@ -269,8 +352,7 @@
       "pending": 0,
       "permission": "read",
       "reviews_90d": 0
-    },
-    "status": "departed"
+    }
   },
   "kurtamohler": {
     "history": [],
@@ -282,8 +364,7 @@
       "pending": 1,
       "permission": "write",
       "reviews_90d": 65
-    },
-    "status": "active"
+    }
   },
   "lezcano": {
     "history": [],
@@ -295,8 +376,7 @@
       "pending": 61,
       "permission": "write",
       "reviews_90d": 10
-    },
-    "status": "active"
+    }
   },
   "malfet": {
     "history": [],
@@ -309,7 +389,37 @@
       "permission": "admin",
       "reviews_90d": 519
     },
-    "status": "active"
+    "profile": {
+      "areas": {
+        "(root)": 3,
+        "aten/src/ATen": 58,
+        "benchmarks": 2,
+        "benchmarks/mps": 2,
+        "benchmarks/operator_benchmark/mps": 2,
+        "c10/metal": 7,
+        "c10/test/util": 2,
+        "c10/util": 3,
+        "caffe2": 2,
+        "cmake": 6,
+        "cmake/Modules": 5,
+        "cmake/public": 4,
+        "docs/source": 2,
+        "test": 42,
+        "test/inductor": 6,
+        "third_party": 3,
+        "torch": 5,
+        "torch/_C": 3,
+        "torch/_inductor/codegen": 2,
+        "torch/csrc/inductor": 3,
+        "torch/csrc/jit": 5,
+        "torch/csrc/mps": 3,
+        "torch/csrc/profiler": 3,
+        "torch/mps": 4,
+        "torch/testing/_internal": 21
+      },
+      "profiled_at": "2026-09-10",
+      "sample": 100
+    }
   },
   "mengluy": {
     "history": [],
@@ -321,8 +431,7 @@
       "pending": 0,
       "permission": "read",
       "reviews_90d": 0
-    },
-    "status": "departed"
+    }
   },
   "ngimel": {
     "history": [],
@@ -335,7 +444,37 @@
       "permission": "write",
       "reviews_90d": 226
     },
-    "status": "active"
+    "profile": {
+      "areas": {
+        "(root)": 3,
+        ".ci/pytorch": 4,
+        ".github/workflows": 3,
+        "aten/src/ATen": 32,
+        "c10/core": 5,
+        "c10/cuda": 11,
+        "docs/source": 4,
+        "docs/source/notes": 3,
+        "test": 46,
+        "test/distributed": 7,
+        "test/distributed/_composable": 3,
+        "test/expect": 4,
+        "test/inductor": 8,
+        "test/profiler": 17,
+        "torch": 6,
+        "torch/_C": 10,
+        "torch/_inductor": 11,
+        "torch/_inductor/kernel": 4,
+        "torch/csrc/autograd": 5,
+        "torch/csrc/cuda": 5,
+        "torch/csrc/distributed": 7,
+        "torch/csrc/profiler": 4,
+        "torch/cuda": 18,
+        "torch/profiler/_cupti": 18,
+        "torch/testing/_internal": 7
+      },
+      "profiled_at": "2026-09-10",
+      "sample": 100
+    }
   },
   "peterbell10": {
     "history": [],
@@ -347,8 +486,7 @@
       "pending": 2,
       "permission": "write",
       "reviews_90d": 1
-    },
-    "status": "cold"
+    }
   },
   "romanmeta": {
     "history": [],
@@ -360,8 +498,7 @@
       "pending": 0,
       "permission": "write",
       "reviews_90d": 2
-    },
-    "status": "cold"
+    }
   },
   "weifengpy": {
     "history": [],
@@ -373,8 +510,7 @@
       "pending": 26,
       "permission": "write",
       "reviews_90d": 48
-    },
-    "status": "active"
+    }
   },
   "zhxchen17": {
     "history": [],
@@ -386,7 +522,6 @@
       "pending": 23,
       "permission": "read",
       "reviews_90d": 0
-    },
-    "status": "departed"
+    }
   }
 }

@@ -669,18 +669,33 @@ candidates on write access alone; it asks the knowledgebase whether the
 person is *actively reviewing*. Per login it records observed GitHub
 activity — PRs reviewed in the last 90 days (`reviewed-by:` search),
 open review requests pending on them (load), commits in the window, repo
-permission — and derives `active` (≥3 reviews/90d), `cold` (has access,
-isn't reviewing; commits alone don't count) or `departed` (no write
-access). Records go stale after 14 days and are re-observed lazily, each
-observation is appended to a per-login `history`, and the file is
-committed so the base accumulates across sessions. `suggest` prints the
-candidates it skipped and why. Manual overrides with a note win over the
-derived status (`greendog reviewers set <login> --status active --note
-"..."`, `--clear` to remove); `greendog reviewers show|refresh [logins]`
-to inspect/update. People with ≥100 pending requests are flagged
-OVERLOADED but not excluded. Search API budget is 30 calls/min (two per
-observation); refresh backs off on rate limit and never persists a failed
-observation.
+permission — and derives `active` (≥1 review/90d — one at all is fine,
+Edward 2026-09-10), `cold` (has access, isn't reviewing; commits alone
+don't count) or `departed` (no write access). Records go stale after 14
+days and are re-observed lazily, each observation is appended to a
+per-login `history`, and the file is committed so the base accumulates
+across sessions. `suggest` prints the candidates it skipped and why.
+- **Overload is a judgment call, not a count.** ≥100 pending requests
+  flags OVERLOADED but never excludes. fffrog's queue is one PR-heavy
+  campaign of near-identical PRs → pinned `--overloaded no`. albanD is
+  genuinely overloaded → pinned `yes`, and should only be roped in on
+  his **revealed preference**: `greendog reviewers profile <login>`
+  buckets the directories of the last 100 PRs they reviewed; `suggest`
+  reports whether an overloaded candidate's profile covers the PR's core
+  files ("in their wheelhouse" vs "NOT in their recently-reviewed areas").
+- Overrides: `greendog reviewers set <login> [--status ...]
+  [--overloaded yes|no] [--note "..."]` (any subset; `--clear` removes);
+  `show|refresh [logins]` to inspect/update.
+- Search API budget is 30 calls/min (two per observation); refresh backs
+  off on rate limit and never persists a failed observation. There is
+  **no internal GitHub API proxy** (OSS team won't share bot tokens). The
+  internal mirror is Dev Infra's **ClickHouse** (HUD backend, webhook-fed
+  PR/issue/comment data; console via SSO at console.clickhouse.cloud,
+  programmatic creds from Huy Do / Catherine Lee; docs:
+  test-infra wiki "Querying-ClickHouse-database-for-fun-and-profit").
+  Review-*request* events may not be stored there; the Hive table
+  `aml.fct_pytorch_github_review_events` (devserver only) has them.
+  Wiring ClickHouse in as an alternate observer is future work.
 
 #### Double-check jansel-assigned reviewers
 

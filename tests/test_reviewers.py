@@ -32,14 +32,29 @@ class ClassifyTest(unittest.TestCase):
     def test_no_write_access_is_departed(self):
         self.assertEqual(reviewers.classify({"permission": "read", "reviews_90d": 50}), "departed")
 
-    def test_enough_reviews_is_active(self):
-        self.assertEqual(reviewers.classify({"permission": "write", "reviews_90d": 3}), "active")
+    def test_one_review_is_active(self):
+        self.assertEqual(reviewers.classify({"permission": "write", "reviews_90d": 1}), "active")
 
     def test_commits_alone_are_cold(self):
         self.assertEqual(
-            reviewers.classify({"permission": "admin", "reviews_90d": 1, "commits_90d": 40}),
+            reviewers.classify({"permission": "admin", "reviews_90d": 0, "commits_90d": 40}),
             "cold",
         )
+
+    def test_overloaded_override_and_note(self):
+        rec = {"latest": {"permission": "write", "reviews_90d": 300, "pending": 400},
+               "override": {"overloaded": False, "note": "one campaign, similar PRs"}}
+        st, why = reviewers.status_of(rec)
+        self.assertEqual(st, "active")
+        self.assertNotIn("OVERLOADED", why)
+        self.assertIn("one campaign", why)
+        self.assertFalse(reviewers.is_overloaded(rec))
+
+    def test_area_overlap(self):
+        rec = {"profile": {"areas": {"torch/csrc/autograd": 9, "c10/core": 4}}}
+        hits = reviewers.area_overlap(
+            rec, ["torch/csrc/autograd/engine.cpp", "torch/_dynamo/x.py", "c10/core/T.h"])
+        self.assertEqual(hits, [("torch/csrc/autograd", 9), ("c10/core", 4)])
 
     def test_override_wins(self):
         rec = {"latest": {"permission": "write", "reviews_90d": 0},
@@ -87,7 +102,7 @@ class KBTest(unittest.TestCase):
         kb.run = _fake_runner(reviews=0)
         kb.refresh("bob", today=date(2026, 3, 1))
         rec = kb.record("bob")
-        self.assertEqual(rec["status"], "cold")
+        self.assertEqual(reviewers.status_of(rec)[0], "cold")
         self.assertEqual(len(rec["history"]), 1)
         self.assertEqual(rec["history"][0]["reviews_90d"], 10)
 
@@ -97,10 +112,10 @@ class KBTest(unittest.TestCase):
         kb.run = _fake_runner(reviews=0)
         self.assertTrue(kb.is_stale("carol", today=date(2026, 3, 1)))
         kb.ensure("carol", today=date(2026, 3, 1))
-        self.assertEqual(kb.record("carol")["status"], "cold")
+        self.assertEqual(reviewers.status_of(kb.record("carol"))[0], "cold")
 
     def test_cold_not_eligible(self):
-        kb = reviewers.ReviewerKB(path=self.path, run=_fake_runner(reviews=1, commits=30))
+        kb = reviewers.ReviewerKB(path=self.path, run=_fake_runner(reviews=0, commits=30))
         self.assertFalse(kb.eligible("dave"))
 
 

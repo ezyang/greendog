@@ -24,9 +24,15 @@ Derived status (`classify`):
 
 Manual overrides win over the derived status, so Edward can pin someone as
 `active` ("reviews via internal tooling") or `departed` ("left, GitHub
-access not yet revoked") with a note explaining why.  Each observation is
-appended to `history` so the file becomes a record of how activity trends,
-not just a snapshot.
+access not yet revoked"), or pin `overloaded` true/false, with a note
+explaining why.  Each observation is appended to `history` so the file
+becomes a record of how activity trends, not just a snapshot.
+
+Area profile ("revealed preference", `profile()`): the directories that
+show up most across the PRs a person recently reviewed.  Someone who is
+genuinely overloaded (albanD) should still be roped in on the areas they
+demonstrably keep reviewing; `suggest` reports whether a PR's core files
+overlap the candidate's profile.
 """
 from __future__ import annotations
 
@@ -45,12 +51,21 @@ REPO = "pytorch/pytorch"
 KB_PATH = PROJECT_ROOT / "reviewers.json"
 
 WINDOW_DAYS = 90
-# Reviews in the window needed to count as "actively reviewing".
-MIN_REVIEWS_ACTIVE = 3
+# Reviews in the window needed to count as "actively reviewing".  One is
+# enough (Edward, 2026-09-10): the point is to drop people who have stopped
+# reviewing entirely, not to rank by volume.
+MIN_REVIEWS_ACTIVE = 1
 # Re-observe a login when its record is older than this.
 STALE_DAYS = 14
-# Flag (don't gate) people with this many open review requests.
+# Flag (don't gate) people with this many open review requests.  Raw pending
+# count is a blunt signal -- fffrog's queue is one PR-heavy campaign of
+# near-identical PRs -- so an override can pin `overloaded` either way.
 OVERLOADED_PENDING = 100
+# Area profile ("revealed preference"): how many recently reviewed PRs to
+# sample and how deep a directory prefix to bucket by.
+PROFILE_SAMPLE = 100
+PROFILE_DEPTH = 3
+PROFILE_TOP = 25
 # Keep at most this many past observations per login.
 HISTORY_KEEP = 24
 
@@ -149,24 +164,73 @@ def classify(obs: dict) -> str:
     return "cold"
 
 
+def is_overloaded(rec: dict) -> bool:
+    ov = rec.get("override") or {}
+    if ov.get("overloaded") is not None:
+        return bool(ov["overloaded"])
+    return ((rec.get("latest") or {}).get("pending") or 0) >= OVERLOADED_PENDING
+
+
 def status_of(rec: dict) -> tuple[str, str]:
     """(status, why) for a knowledgebase record, honouring overrides."""
-    ov = rec.get("override")
-    if ov and ov.get("status"):
-        return ov["status"], f"override: {ov.get('note') or 'no note'}"
+    ov = rec.get("override") or {}
     obs = rec.get("latest") or {}
-    st = classify(obs)
-    why = {
-        "departed": f"permission={obs.get('permission')}",
-        "active": f"{obs.get('reviews_90d')} reviews in {WINDOW_DAYS}d, "
-                  f"last seen {obs.get('last_seen')}",
-        "cold": f"only {obs.get('reviews_90d')} reviews in {WINDOW_DAYS}d "
-                f"(last seen {obs.get('last_seen')}), "
-                f"{obs.get('commits_90d')} commits",
-    }[st]
-    if (obs.get("pending") or 0) >= OVERLOADED_PENDING:
-        why += f"; OVERLOADED ({obs.get('pending')} pending requests)"
+    if ov.get("status"):
+        st, why = ov["status"], f"override: {ov.get('note') or 'no note'}"
+    else:
+        st = classify(obs)
+        why = {
+            "departed": f"permission={obs.get('permission')}",
+            "active": f"{obs.get('reviews_90d')} reviews in {WINDOW_DAYS}d, "
+                      f"last seen {obs.get('last_seen')}",
+            "cold": f"only {obs.get('reviews_90d')} reviews in {WINDOW_DAYS}d "
+                    f"(last seen {obs.get('last_seen')}), "
+                    f"{obs.get('commits_90d')} commits",
+        }[st]
+        if ov.get("note"):
+            why += f"; note: {ov['note']}"
+    if is_overloaded(rec):
+        why += f" [OVERLOADED: {obs.get('pending')} pending requests]"
     return st, why
+
+
+def _area(path: str) -> str:
+    parts = path.split("/")
+    return "/".join(parts[:-1][:PROFILE_DEPTH]) or "(root)"
+
+
+def profile(login: str, run: Runner = _run, today: date | None = None) -> dict:
+    """Directories most often touched by PRs `login` recently reviewed."""
+    today = today or _today()
+    since = (today - timedelta(days=WINDOW_DAYS)).isoformat()
+    q = (f"repo:{REPO} is:pr reviewed-by:{login} updated:>={since} "
+         "sort:updated-desc")
+    gql = ("query($q:String!,$n:Int!){ search(query:$q, type:ISSUE, first:$n){ "
+           "nodes{ ... on PullRequest { number files(first:60){ nodes{ path } } } } } }")
+    r = run(["gh", "api", "graphql", "-f", f"query={gql}", "-f", f"q={q}",
+             "-F", f"n={PROFILE_SAMPLE}"])
+    if r.returncode != 0:
+        raise ObservationError(f"profile query failed for {login}: "
+                               f"{(r.stderr or '').strip()}")
+    nodes = json.loads(r.stdout)["data"]["search"]["nodes"]
+    counts: dict[str, int] = {}
+    for pr in nodes:
+        for a in {_area(f["path"]) for f in (pr.get("files") or {}).get("nodes", [])}:
+            counts[a] = counts.get(a, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:PROFILE_TOP]
+    return {"profiled_at": today.isoformat(), "sample": len(nodes),
+            "areas": dict(top)}
+
+
+def area_overlap(rec: dict, paths: list[str]) -> list[tuple[str, int]]:
+    """(area, prs-reviewed-in-area) for each of `paths` inside the profile."""
+    areas = (rec.get("profile") or {}).get("areas") or {}
+    hits = {}
+    for p in paths:
+        a = _area(p)
+        if a in areas:
+            hits[a] = areas[a]
+    return sorted(hits.items(), key=lambda kv: -kv[1])
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +277,6 @@ class ReviewerKB:
         if prev:
             rec["history"] = ([prev] + rec.get("history", []))[:HISTORY_KEEP]
         rec["latest"] = obs
-        rec["status"] = classify(obs)
         return rec
 
     def ensure(self, login: str, today: date | None = None) -> dict:
@@ -222,14 +285,26 @@ class ReviewerKB:
             self.refresh(login, today)
         return self.data[login]
 
-    def set_override(self, login: str, status: str | None, note: str | None) -> dict:
+    def set_override(self, login: str, *, status: str | None = None,
+                     note: str | None = None, overloaded: bool | None = None,
+                     clear: bool = False) -> dict:
         rec = self.data.setdefault(login, {"history": []})
-        if status is None and note is None:
+        if clear:
             rec.pop("override", None)
-        else:
-            rec["override"] = {
-                "status": status, "note": note, "date": _today().isoformat(),
-            }
+            return rec
+        ov = rec.setdefault("override", {})
+        if status is not None:
+            ov["status"] = status
+        if note is not None:
+            ov["note"] = note
+        if overloaded is not None:
+            ov["overloaded"] = overloaded
+        ov["date"] = _today().isoformat()
+        return rec
+
+    def reprofile(self, login: str, today: date | None = None) -> dict:
+        rec = self.data.setdefault(login, {"history": []})
+        rec["profile"] = profile(login, self.run, today)
         return rec
 
     def eligible(self, login: str) -> bool:
@@ -281,12 +356,27 @@ def cmd_reviewers(args) -> None:
         return
     if args.action == "set":
         (lg,) = args.logins
-        rec = kb.set_override(lg, None if args.clear else args.status,
-                              None if args.clear else args.note)
+        ov = None if args.overloaded is None else (args.overloaded == "yes")
+        rec = kb.set_override(lg, status=args.status, note=args.note,
+                              overloaded=ov, clear=args.clear)
         if not rec.get("latest"):
             kb.refresh(lg)
         kb.save()
         print(_fmt(lg, kb.record(lg)))
+        return
+    if args.action == "profile":
+        logins = args.logins or sorted(kb.data)
+        for lg in logins:
+            try:
+                rec = kb.reprofile(lg)
+            except ObservationError as e:
+                print(f"{lg:<22} ERROR {e}", file=sys.stderr)
+                continue
+            pf = rec["profile"]
+            print(f"{lg}: {pf['sample']} PRs reviewed in {WINDOW_DAYS}d; top areas:")
+            for a, n in list(pf["areas"].items())[:12]:
+                print(f"    {n:>3}  {a}")
+        kb.save()
         return
     print(f"unknown action {args.action}", file=sys.stderr)
     sys.exit(2)
