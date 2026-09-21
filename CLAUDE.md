@@ -1,748 +1,99 @@
-greendog is a tool for making it easier to investigate and fix master CI
-failures on pytorch/pytorch.  Here is the design space we live in:
+greendog makes it easier to investigate and fix master CI failures on
+pytorch/pytorch, and (second modality) keeps the OSS-PR-triage queue moving.
 
-- The first iteration of the tool does NOT assume we have a working build of
-  PyTorch that we can iterate on.  So we are basically looking for
-  interventions that we can *one shot* without having the ability to locally
-  test our changes.  This limits the set of potential interventions we can do,
-  but that's good because we also want this tool to operate autonomously, and
-  if we do complicated interventions it's more important for a human operator
-  to intervene.
+This file holds only short, generalizable guidance. Detailed playbooks live
+in `docs/`, case forensics in `CASE_NOTES.md`. Add a pattern here only after
+confirming with Edward that it is genuinely reusable.
 
-- We care about "situational awareness" about trunk.  E.g., consider all
-  commits in the last 24 hours, what is not working (even if we can't easily fix it?)
-  For example, pytorch/pytorch has a concept of ci: sev which is used to communicate
-  breakage, we want our agents to have access to this info (example:
-  https://github.com/pytorch/pytorch/issues/182227)  For example, the HUD view
-  is intended to be a way for humans to visually understand trunk redness, but
-  it has gone beyond human parseability.  Another important part of
-  situational awareness is the periodic jobs, which we have far less signal
-  on, it's much more important to sift out as much info as we can get from the
-  logs.
+- `docs/ci-investigation.md` — autorevert/merge-skew checklist, target
+  determination (TD) reference, investigation anti-patterns, marking jobs
+  unstable, disabling tests, known persistent breakage.
+- `docs/pr-triage.md` — full triage rubric, `greendog triage` / `suggest`
+  internals, routing autorules, reviewer knowledgebase, liveness checks,
+  sweep patterns.
+- `CASE_NOTES.md` — dated write-ups of specific investigations.
 
-- When reporting "current trunk state", don't focus on HEAD — it typically
-  has 1000+ pending/missing jobs and tells us nothing useful.  Instead, look
-  back ~6 hours to find commits whose CI has substantially completed.  The
-  "trunk HEAD" section of the report should really be "most recent commit
-  with meaningful CI results" (i.e., the majority of jobs have a conclusion).
+## Design space
 
-- To add on, flakiness at scale is important, because if something keeps
-  flaking at a nontrivial percentage, we should work on it.  We can think of
-  stack ranking flakiness in terms of incidence in some period, and using that
-  to prioritize work we want to do.
-
-- Our agents do NOT have internet access, for security reasons.  The harness
-  is responsible for feeding in information.
-
-- The HUD at https://hud.pytorch.org/ has lots of useful information, in a
-  sparsely documented API we have access to that is maintained by Dev Infra.  We should
-  document and make use of it as appropriate.  For example, on green-red edges, it seems
-  that we already have AI assessments about whether or not something broke master or not.
-  These show up like https://github.com/pytorch/pytorch/actions/runs/25282086754 (advisor run).  But it seems these advisor runs don't always run.
-
-- We can only easily test this live.  We'll work on features as we discover
-  particular trunk breakages.
-
-- There is an autorevert system.  I don't know how good it is.  We'll be
-  evaluating how good it is as we work on this.
-  https://hud.pytorch.org/hud/pytorch/pytorch/main/autorevert
-
-- There are some configs that have been presistently broken.  If something's
-  been broken for more than a week, let's maintain state about these as
-  persistently broken, and we will need a dedicated stab to try to fix them.
-
-- There are a HUGE number of configs. It will be important to subdivide the
-  problem appropriately into subagents.
+- Interventions must be **one-shot**: no local PyTorch build to iterate on.
+  Keep them simple so the tool can run autonomously; complex fixes need a
+  human.
+- We care about **situational awareness** of trunk: last-24h breakage,
+  `ci: sev` issues, periodic jobs (little signal, so mine the logs), and
+  flakiness stack-ranked by incidence.
+- **Agents have no internet access.** The harness feeds in information.
+- The HUD (https://hud.pytorch.org/) has a sparsely documented API; document
+  and use it. Green→red edges sometimes have AI "advisor" assessments.
+  There is an autorevert system of unknown quality
+  (https://hud.pytorch.org/hud/pytorch/pytorch/main/autorevert).
+- Configs broken >1 week are tracked as **persistently broken** and need a
+  dedicated stab. There are a huge number of configs; subdivide into
+  subagents.
+- We can only test live; features arrive as we hit real breakages.
 
 ## Repo workflow
 
-- After making repository changes, automatically stage relevant files and
-  commit them before reporting back, unless the user explicitly asks not to
-  commit. Do not include generated artifacts, caches, virtualenvs, credentials,
-  or unrelated user changes in the commit.
-- This file holds only short, generalizable guidance. Detailed forensic
-  write-ups of specific investigations live in `CASE_NOTES.md` — add new
-  cases there, and only add a pattern here (after confirming with Edward)
-  when it's genuinely reusable.
-
-## Analysis methodology
-
-When analyzing CI health, follow this approach:
-
-1. **Pick a single representative commit.** Find one recent commit with
-   near-complete CI (ideally 90%+ of per-commit jobs concluded). Analyze
-   that commit's failures as the "current state of trunk." Don't aggregate
-   failure counts across many commits — that conflates current redness with
-   regressions that were already autoreverted.
-
-2. **Filter to per-commit jobs by default.** The job grid includes periodic,
-   nightly, and perf-benchmark workflows that don't run on every commit.
-   Unless specifically asked about periodic jobs, exclude them. Per-commit
-   workflow prefixes: `pull`, `trunk`, `Lint`. Exclude: anything with
-   `periodic`, `nightly`, `perf`, `slow`, `benchmark` in the workflow name.
-   **Caution**: some workflows look per-commit but are actually
-   nightly/on-demand hybrids — e.g., `dynamo-unittest` and
-   `inductor-unittest` are triggered by cron schedule + ciflow tags, NOT by
-   every push to main. Check the workflow YAML triggers in
-   `~/Dev/pytorch/.github/workflows/` before assuming a workflow is
-   per-commit. A workflow is truly per-commit only if it has
-   `push: branches: [main]` (or equivalent) as a trigger.
-
-3. **Distinguish main shards from auxiliary runs.** Each test config runs
-   three variants: the main test, a `mem_leak_check` rerun, and a
-   `rerun_disabled_tests` rerun. When assessing trunk health, focus on
-   main shard failures first. `mem_leak_check` and `rerun_disabled_tests`
-   failures are secondary signals.
-
-4. **Use the window to validate failures before reporting them.** Once you've
-   identified failures on the representative commit, look across the window
-   to check: does the same job fail on neighboring commits too? A job that
-   fails on 1 commit but succeeds on the 5 commits before and after it is
-   a **flake** — don't report it as breakage. Only report failures that are
-   either persistent (failing across multiple commits) or that correspond
-   to a clear green→red transition at a specific commit. One-off failures
-   are noise at this scale.
-
-5. **Cross-reference with HUD.** The HUD at hud.pytorch.org shows the
-   same data visually. If analysis seems wrong (e.g., claiming a config
-   is broadly red when HUD shows it green), the analysis methodology is
-   likely flawed — revisit assumptions about which jobs and commits are
-   being examined.
-
-## Investigating autoreverts and landed-then-broken PRs
-
-When a PR lands and gets autoreverted, the key question is always: why
-did CI pass pre-merge but fail post-merge? Follow this checklist.
-
-0. **First, check HOW the PR was merged — it often explains landing
-   directly.** Read the merge command and the mergebot's response before
-   theorizing. `@pytorchbot merge -i` (ignore-current) and `merge -f`
-   (force) land over red checks, so a red signal being present pre-merge
-   is not a contradiction. Pull the author's command and the mergebot's
-   "Merge started ... ignoring the following N checks" comment via
-   `gh api repos/pytorch/pytorch/issues/<n>/comments`; that comment lists
-   exactly which checks `-i` bypassed. Two tells:
-   - **Reverted signal IS in the ignored list** → a real failure was
-     visible pre-merge and dismissed (often because that job is
-     chronically flaky, e.g. m2-15 mps metal_capture SIGSEGV, so `-i` on
-     it is habitual). Dr. CI may reinforce this by bucketing it "unrelated"
-     — it keys on whether the *job* was red on the merge base, not on the
-     failure *reason*, so a new PR-caused failure in a perennially-red job
-     gets hidden.
-   - **Reverted signal is NOT in the ignored list** → the failure wasn't
-     visible pre-merge; suspect merge skew (go to item 1).
-   For ghstack, the merge command lives on the *stack-top* PR, not
-   necessarily the reverted one — the mergebot comments "Starting merge as
-   part of PR stack under #<top>" on lower PRs; follow that to find the
-   command. (Cases: #188029 stale-base skew; #186352 `-i` over a real
-   m2-15 mps regression.)
-
-(If an investigation reveals a genuinely novel, *reusable* pattern,
-propose a short CLAUDE.md addition and ask before writing it. Full
-case-specific forensics — dates, line numbers, measured rates — go in
-CASE_NOTES.md, not here.)
-
-1. **First verify: is the landed commit the same as the tested commit?**
-   This is the most important check and should be done early. The PR head
-   commit (what CI tests) and the merge commit on main (what actually
-   lands) can diverge, especially for ghstack PRs. Compare them with:
-   ```
-   git diff <pr-head-sha> <merge-commit-sha> -- <relevant files>
-   ```
-   If they differ, the merge/squash/rebase onto main silently produced
-   different code than what was tested — typically because another PR
-   touching the same file landed between the ghstack base sync and merge
-   time. To find the conflicting commit: identify the ghstack base
-   (`gh/<user>/<n>/base`) and main at land time (parent of merge commit),
-   then `git log <base>..<main-at-land> -- <file>`. (Case: PR #182192,
-   see CASE_NOTES.md.)
-
-2. **Pull actual CI logs to verify test execution.** Don't assume tests
-   ran or didn't run — check. Use `gh run view --repo pytorch/pytorch
-   --job <job-id> --log` and grep for specific test names. Verify:
-   - Did the test file appear in the shard's test list?
-   - Did the specific test methods get collected and executed?
-   - What was the pass/fail result for each sub-shard?
-   Note: `test_aotdispatch.py` is split into 8 sub-shards per CI shard.
-   Log access requires no special auth for public repos via `gh` CLI
-   (the REST API returns 403 for non-admins, but `gh run view --log`
-   works).
-
-3. **Understand the pull vs trunk workflow differences.**
-   - `pull` workflow: triggered by `pull_request` event, `PR_NUMBER` is
-     set, target determination (TD) is enabled (runs top 25% of tests by
-     score). Uses `linux.arm64.m8g.4xlarge` runners for aarch64.
-   - `trunk` workflow: triggered by `push` to `main` or `ciflow/trunk/*`,
-     `PR_NUMBER` is unset, TD is disabled (runs 100% of tests). Uses
-     `lf.linux.arm64.m7g.4xlarge` runners for aarch64.
-   - Both run on the same commit SHA for the same PR (via ciflow), but
-     the code checked out may differ for `pull_request` events (GitHub
-     creates a temporary merge commit).
-
-4. **Don't trust WebFetch summaries of PR content.** AI-summarized PR
-   diffs and comments can be wrong about specific details (class names,
-   method names, which tests failed). Always verify claims against actual
-   code (`git show`, `curl` raw files) and actual logs.
-
-5. **Check for masking by known-flaky tests.** A CI job can fail for
-   multiple reasons. If a known-flaky test (e.g., `DivTensorV2`) fails
-   in the same shard as a new regression, CI triage may attribute the
-   job failure to the known-flaky test, hiding the real issue. The
-   `merge -i` (ignore failures) flag then reasonably bypasses what looks
-   like pre-existing flakiness.
-
-6. **Check for merge skew (test passed on PR but fails on trunk).**
-   This is the subtlest failure mode. The test ran on the PR, passed,
-   but fails on the merge commit because other PRs landed between CI
-   and merge. Investigation steps:
-
-   a. **Confirm the test actually ran on PR CI.** Pull the logs for
-      the specific shard and grep for the test name. Don't assume —
-      tests are sharded across multiple jobs and TD may have excluded
-      them. Check ALL shards of the relevant config (e.g.,
-      `dynamo_wrapped` has 3 shards; `test_custom_ops` may be in
-      shard 2, not shard 1).
-
-   b. **If the test ran and passed, compute the skew window.** Get
-      the BASE_SHA from the PR CI logs (grep for `BASE_SHA=` in the
-      job log) and the parent of the merge commit on trunk:
-      ```
-      gh api repos/pytorch/pytorch/commits/<merge-sha> --jq '.parents[].sha'
-      ```
-      Then list commits in the window:
-      ```
-      gh api repos/pytorch/pytorch/compare/<base-sha>...<trunk-parent> \
-        --jq '.commits[] | "\(.sha[0:10]) \(.commit.message | split("\n")[0])"'
-      ```
-
-   c. **Search for the culprit in the skew window.** Check which
-      commits touch files related to the failure. For dynamo expected
-      failure issues, check who originally created the marker file
-      (`gh api "repos/pytorch/pytorch/commits?path=<marker-path>"`)
-      and look for related PRs in the skew window that touch the
-      same subsystem.
-
-   d. **For ghstack PRs, check the entire stack.** If the PR is part
-      of a ghstack, the top-of-stack CI includes lower commits. Pull
-      CI logs from the TOP of the stack too — if the combined stack
-      also passed, the failure is definitely from trunk skew, not
-      from the stack itself.
-
-   Skew can also work in reverse: an "unexpected success" autorevert
-   can mean another PR in the skew window fixed the underlying issue
-   and made an expected-failure marker stale. (Case: PR #182293, see
-   CASE_NOTES.md.)
-
-## Target determination (TD) reference
-
-TD decides which tests to run in pre-merge CI. Key facts:
-
-- Enabled when `PR_NUMBER` is set, not on main branch, not macOS/XPU/ONNX.
-- Runs top 25% of tests by aggregated heuristic score; bottom 75% skipped.
-- `EditedByPR` heuristic gives score 1.0 (maximum) to any test file
-  directly modified by the PR (whole-file granularity).
-- Scores are additive across heuristics. Score 0 = no heuristic cares.
-- Code: `tools/testing/target_determination/` and consumed in
-  `test/run_test.py` at the `get_top_per_tests(percent_to_run)` call.
-- TD operates at test-file level primarily; `TestRun` can include/exclude
-  specific test classes but most heuristics use full-file `TestRun`s.
-- TD runs AFTER other filters. The `--dynamo` flag, `--exclude-*` flags,
-  and shard assignment all happen before TD. TD only selects among the
-  tests that survive those earlier filters. So if a test doesn't appear
-  in TD's "tests to run" OR "excluded" lists, it was filtered out at an
-  earlier stage (e.g., not assigned to this shard).
-- When TD has no historical timing data for a job name (e.g., new OSDC
-  runner infra), it falls back to running ALL tests. Check for the log
-  line `Running all tests` vs `Running 25% of tests based on TD`.
-
-## Investigation anti-patterns
-
-Traps to avoid when investigating CI failures:
-
-- **Don't theorize without logs.** Every theory about "TD skipped it" or
-  "the test wasn't in this shard" must be verified by pulling actual job
-  logs. Theories are cheap; logs are ground truth.
-- **Check ALL shards, not just shard 1.** Tests are distributed across
-  shards. `test_custom_ops` might be in shard 2 of `dynamo_wrapped`,
-  not shard 1. The shard assignment is visible in the TD output or the
-  `td_exclusions` artifact.
-- **Don't confuse the autorevert confirmation run with the original
-  failure.** The autorevert system re-dispatches a filtered workflow
-  with `tests-to-include: <failing_test>` to confirm the failure isn't
-  a flake. This confirmation run has different inputs than the original
-  trunk CI. When investigating, find the ORIGINAL push-triggered trunk
-  run, not the autorevert confirmation.
-- **Investigate before concluding.** Early in an investigation, resist
-  the urge to declare a root cause. Multiple plausible theories can be
-  wrong (TD excluded it? no, `--dynamo` excluded it? no, wrong shard?
-  no, it ran and passed — it's actually merge skew). Follow the evidence
-  step by step.
-- **A named test can be the fall guy for a shared lazy-build/lock hang,
-  not the actual failure.** Tests that lazily build a `cpp_extension`
-  (e.g. `load_inline`) block on a shared build lock. If a runner has a
-  stale lock file, the WHOLE shard hangs until the ~30-min wall-clock
-  timeout kills it; pytest then marks the FIRST test that triggered the
-  build as `FAILED CONSISTENTLY` — the named test is arbitrary. Tell:
-  traceback ends in `KeyboardInterrupt` in the lock spin loop and the
-  run summary shows `NNN passed ... in ~1796s (0:29:56)` — a timeout,
-  not an assert failure. Infra, not a regression; don't hunt a culprit.
-  Corollary: before deep-diving a HUD failure, first check whether the
-  owning job is even red on recent trunk — HUD pages can show stale hits.
-  (Case: 2026-07 test_mps / file_baton, see CASE_NOTES.md.)
-- **A macOS `mps` red is NOT necessarily the lock hang — distinguish an
-  instant SIGSEGV from a 30-min timeout.** The trunk mps job also runs a
-  standalone `MTL_CAPTURE_ENABLED=1 ... -k test_metal_capture` line in
-  `.ci/pytorch/macos-test.sh` (only place this test runs), which drives
-  Apple's `MTLCaptureManager` and can segfault the interpreter inside
-  Apple's framework. Tell: `Segmentation fault: 11` / exit 139, instant,
-  AFTER the main mps suite already passed. Known runner-specific infra
-  flake (~4% on `macos-m2-15`, clean on m1-14), long-standing, no
-  rerun/retry since it bypasses run_test.py — not a regression, don't
-  hunt a culprit. (Full forensics + fixable-defect notes: CASE_NOTES.md.)
-- **A test file runs TWICE per shard: `-m '(serial)'` then
-  `-m '(not serial)'`.** `run_test.py` splits each file into a serial
-  invocation and a non-serial invocation, each running a DIFFERENT subset
-  of the file's tests. So a log line like `inductor/test_triton_heuristics
-  1/1 was successful` refers ONLY to the serial subset — the non-serial
-  invocation of the SAME file runs later and can fail. When grepping a log
-  to confirm/deny a test failure, find BOTH `Executing [...] '-m',
-  '(serial)'` and `'-m', '(not serial)'` runs; the `FAILED CONSISTENTLY`
-  and `The following tests failed consistently: [...]` summary lines live
-  at the very end of the second run. Corollary: `gh run view --log` can
-  truncate large logs mid-run (~5k lines) — if you don't see the failure,
-  fetch the raw log via `gh api repos/pytorch/pytorch/actions/jobs/<id>/logs`
-  (returned the full 26k-line log where `gh run view --log` stopped at 5k).
-- **`nogpu` shards crash GPU-requiring tests that lack a skip guard.**
-  Periodic `nogpu_AVX512` / `nogpu_NO_AVX2` shards run on machines with NO
-  NVIDIA driver. Any test whose setup calls `DeviceProperties.create(
-  torch.device(GPU_TYPE))` (or otherwise touches `torch._C._cuda_init()`)
-  dies with `RuntimeError: Found no NVIDIA driver on your system` unless
-  gated by `@requires_gpu()`/`@requires_cuda`. These tests typically only
-  appear in the `(not serial)` group, so they pass the serial run and fail
-  the non-serial one (see above). A test docstring claiming "pure-Python,
-  no GPU" is not a guarantee — check whether its fixtures build a
-  `CachingAutotuner`, which needs a real device.
-- **`backwards_compat` red is almost never the test HUD names.** The job
-  runs deliberate failure-injection meta-tests that write a failed XML
-  for `test_correct_module_names` / `test_modules_can_be_imported` on
-  EVERY run by design, then the real C++ schema check
-  (`check_forward_backward_compatibility.py`), which emits no named-test
-  XML. When the job goes red for any reason, HUD's per-test classifier
-  latches onto the ever-present meta-test failure. **Ignore the named
-  test — scroll to the END of the log for the real cause,** typically a
-  `Broken ops: [...]` block. Corollary: reverting a PR that changed an
-  ATen op signature legitimately trips this check; the clean fix is an
-  ALLOW_LIST entry in the revert. (Mechanics + case: CASE_NOTES.md.)
-
-## Marking CI jobs as unstable
-
-When a job is persistently broken and not worth blocking on, there are
-two mechanisms to mark it "unstable":
-
-1. **Add "unstable" to the job name in the workflow YAML.** The trymerge
-   bot (`trymerge.py:~1858`) checks `if "unstable" in name` and ignores
-   failures for such jobs. Example: a test-matrix entry like
-   `{ config: "foo", runner: "...", unstable }` produces a job name
-   containing "unstable". This is the lightweight option for individual
-   jobs within an otherwise stable workflow.
-
-2. **Move the job from `trunk.yml` / its own workflow into
-   `unstable.yml`.** The unstable workflow
-   (`.github/workflows/unstable.yml`) runs on every push to main but is
-   NOT in `mandatory_checks_name` in `merge_rules.yaml`, so it never
-   blocks merging. Jobs graduate back to trunk when red rate < 5% and
-   TTS < 3h.
-
-Merge rules (`merge_rules.yaml`) only mandate `pull`, `Lint`, `EasyCLA`
-(and sometimes `trunk`, `inductor`). Workflows like `dynamo-unittest`
-are already non-mandatory — failures there don't block merging but do
-create noise in trunk health and may trigger autorevert.
-
-## Disabling individual tests
-
-To disable a flaky/broken test without a repo PR, create a GitHub issue
-in pytorch/pytorch with a title like:
-
-    DISABLED test_method_name (__main__.TestClassName)
-
-The test-infra system picks it up, publishes to S3, and CI skips the
-test automatically. Add `Platforms: <platform>` in the issue body to
-restrict the disable. Valid platforms: `mac`, `win`, `linux`, `rocm`,
-`xpu`, `asan`, `dynamo`, `dynamo_wrapped`, `inductor`, `slow`.
-No Python-version filtering is supported.
-
-## Known persistent breakage
-
-Track things we know are broken but are being handled elsewhere, so
-sitrep doesn't re-investigate them each time.
-
-- **dynamo-unittest / Python 3.13** — `test_input_no_stdout_fileno`
-  (dynamo_core) and `test_namedtuple_default_values_Tensor_type`
-  (dynamo_wrapped shard 2) are persistently red. Pending work by
-  William Wen on dynamo_wrapped. Non-mandatory workflow, not blocking
-  merges. (As of 2026-05-08)
-
-- **vllm multi_model_processor_test** — persistently red, marked
-  unstable in the job name. (As of 2026-05-08)
-
-## OSS PR triage modality
-
-A second greendog modality (beyond CI health): keep the pytorch/pytorch
-OSS-PR-triage queue moving. The queue is the set of open, non-draft PRs
-that carry the `open source` label but NOT the `triaged` label and are
-not yet approved. Maintainers are supposed to look at each and either
-engage or apply `triaged`; the queue accretes when nobody does.
-
-### The search query
-
-The canonical "needs triage" GitHub search:
-
-```
-is:pr repo:pytorch/pytorch base:main -label:triaged draft:false
-label:"open source" NOT WIP NOT TESTING in:title -review:approved
-sort:updated-desc is:open
-```
-
-Fetch it via `gh api -X GET search/issues -f q='<query>' -f per_page=100`.
-Then pull per-PR detail with
-`gh pr view <n> --repo pytorch/pytorch --json number,title,author,createdAt,updatedAt,labels,reviewRequests,reviews,comments`.
-
-### Step 1: "is a maintainer already engaged?"
-
-The first (and currently only) triage step: if someone who can ACTUALLY
-MERGE the PR is ALREADY engaged, we can just bulk-mark it `triaged` — a
-human is on the hook, so it isn't stuck.
-
-**"Can actually merge it" = satisfies `merge_rules.yaml` for this PR.**
-Merges go through `@pytorchbot merge`, which enforces
-`.github/merge_rules.yaml`: a PR can be merged only when approved by
-someone in the `approved_by` list of a rule whose `patterns` cover ALL
-the PR's changed files. So merge rights are **path-scoped**, not a global
-write bit:
-- Global approvers — rules with pattern `*` (Metamates ~91, Core
-  Reviewers ~14, Core Maintainers ~9) — can merge ANY PR.
-- Scoped approvers — e.g. the ROCm rule's `jeffdaily`, the XPU rule's
-  `EikanWang`, the MPS rule's `jhavukainen`/`malfet`/`kurtamohler` — can
-  merge only PRs whose EVERY changed file matches their rule's patterns.
-
-This is stricter and more accurate than the repo permission API or
-`authorAssociation`, both of which over-count: `authorAssociation` can
-report `COLLABORATOR` for people with only `read`, and the permission
-API reports repo write, which isn't the same as being in a merge rule
-for this PR's files. We replicate trymerge's own
-glob→regex (`patterns_to_regex`) and "all files must match" logic so our
-notion of "can merge" matches what the bot would allow. Teams in
-`approved_by` (e.g. `pytorch/pytorch-dev-infra`) are expanded via the
-org teams API.
-
-A PR hits the bar (→ `mark_triaged`) when a person who can merge THIS PR
-(per the above), who is NOT the PR author and NOT a bot (`claude`,
-`pytorch-bot`, `pytorchmergebot`, `pytorchbot`, `facebook-github-bot`,
-`*bot`):
-
-1. **left a substantive review or comment** — any real review state
-   (CHANGES_REQUESTED / COMMENTED / APPROVED) or a substantive comment
-   (design discussion, questions, requesting changes); OR
-2. **is a requested reviewer AND left any comment at all** — even a
-   mechanical bot command like `@claude review this please`. Commenting
-   while assigned as reviewer is evidence they've accepted the review; OR
-3. **is a requested reviewer at all** — however they got there: manual
-   triage, the author's own pick, or CODEOWNERS auto-assignment. The
-   codeowners are the people who can and should land the PR, so a silent
-   codeowner-assigned merger still means the PR has an owner (decision
-   2026-09-10; e.g. #195633 → janeyx99/albanD via `/torch/optim/`). If
-   it's an easy PR you may still want to look personally to help move it
-   along. Caveat: this puts silent load on heavy codeowners (albanD got
-   21 of 48 in the first sweep) — watch that it doesn't become a dumping
-   ground.
-
-What does NOT count:
-- **A requested reviewer who can't merge this PR.** Merge rights are
-  path-scoped (see above); a requested reviewer outside the applicable
-  `merge_rules` entry is not an owner. Neither is a rando reviewer with
-  a high review volume (e.g. `sylvesterkaczmarek`) — that pattern is
-  LLM-agent spam, not engagement.
-- **Mechanical drive-bys by a non-reviewer.** `@pytorchbot fix-lint` or
-  `@claude review ...` from someone who is NOT a requested reviewer is
-  not engagement (see the jansel note below). These only count under
-  criterion 2, i.e. when the commenter is also a reviewer.
-- **jansel's `@claude review these changes` is NOT ownership.** Jason
-  Ansel runs bot automation that leaves `@claude review these changes`
-  on OSS PRs to help unstick CI; per direct agreement with him this does
-  NOT mean he's signed up to review or land the PR. Do not mark such PRs
-  triaged on that basis alone (unless he's also a reviewer → criterion 2,
-  or left a real human review → criterion 1).
-
-**Backend-ifdef'd core files: scoped owner review + global rubber-stamp
-is fine.** A PR can be labeled `module: rocm` (or xpu, etc.) yet change
-only a *core* file whose path doesn't match the backend's `merge_rules`
-patterns (`**rocm**`/`**hip**`), so the scoped owner (e.g. `jeffdaily`)
-can't merge it via that rule. But if the ENTIRE diff is guarded behind
-the backend ifdef (`#if defined(USE_ROCM)...` — the non-backend path
-byte-for-byte unchanged), the module owner's review is still the
-substantive gate; a global approver (Edward) just needs a light final
-sign-off to merge. `greendog triage` can't detect this — it only sees
-file paths, not that the diff is ifdef-guarded — so it's a manual call.
-Acceptable resolution: add the module owner AND a merge-capable global
-approver as reviewers, then mark triaged (the "bat it to me after
-module-owner review" flow).
-
-### Step 2: on-the-hook people must actually be reviewers
-
-If we conclude a maintainer is "on the hook" for a PR, they should be a
-requested reviewer on it. When marking triaged, also add the engaged
-maintainer via `gh pr edit <n> --repo pytorch/pytorch --add-reviewer <user>`
-if they are not already in `reviewRequests`. (Note: `gh pr edit
---add-reviewer` takes ONE reviewer per flag; in zsh, looping
-`read -ra` breaks — add reviewers one at a time.)
-
-Apply the label with
-`gh pr edit <n> --repo pytorch/pytorch --add-label triaged`.
-
-### mergedog coordination
-
-`mergedog` is Edward's own landing automation. A PR labeled `mergedog`
-means someone has claimed it for landing. Whoever claims it should have
-marked themselves as a reviewer on the PR — so a `mergedog` PR normally
-already shows an engaged maintainer and will be caught by Step 1. Don't
-fight over these: if it's under mergedog it's owned. (jansel's
-automation similarly now only acts on PRs carrying the `mergedog` label,
-and there are `jansel-agent-skip` / `agents-banned` labels that skip his
-automation entirely.)
-
-### Workflow implementation note
-
-Step 1 is implemented deterministically as `greendog triage` (see
-`greendog/triage.py` + `greendog/mergerules.py`) — no LLM needed. It
-encodes the three criteria and their exclusions as code: "can merge this
-PR" via `mergerules.py` (fetches `merge_rules.yaml` once, ports
-trymerge's `patterns_to_regex` + "all files match", expands teams), the
-three engagement criteria in `_classify_pr`, the bot-command filter
-(`BOT_COMMAND_PREFIXES`), and the claimed-label skip (`CLAIMED_LABELS`).
-The impure `can_merge` resolver is injected into `adjudicate` so the
-classification logic is unit-testable without network. (Reviewer
-provenance via the issue timeline was removed 2026-09-10 once codeowner
-assignment started counting as engagement.) Needs `gh pr list --json ...,files`
-so each PR's changed files are available for the scoped merge check.
-
-`greendog triage` prints a dry-run table (with the criterion that fired
-per maintainer); `greendog triage --apply` labels the `mark_triaged` PRs
-and adds the engaged maintainer as a reviewer where missing.
-
-This was originally prototyped as a subagent workflow (condense each PR,
-fan out over chunks, apply the rubric), and the LLM verdicts agreed
-exactly with the deterministic scan. Keep the subagent-workflow pattern
-in reserve for the *later* triage steps (beyond "is someone engaged?")
-that need real judgment; those are not yet built.
-
-### Suggesting a reviewer (for tricky PRs)
-
-Beyond "is someone engaged?", the next triage step is: for a PR nobody
-has picked up, name the person best placed to review it. `greendog
-suggest <n>` (see `greendog/suggest.py`) does this from git history —
-specifically, it blames the EXACT line-ranges the PR changes (parsed from
-`gh pr diff` hunk headers, mapped to old-file ranges), aggregates the
-authors by GitHub login, and picks the dominant non-author owner.
-
-The design deliberately only fires when the PR is *tricky enough* to be
-worth taking off the triager's plate — "tricky" being operationalized as
-"there is a clear code owner," not a churn/size metric:
-
-- Only **core** files count (`torch/`, `aten/`, `c10/`, `functorch/`;
-  tests/docs/CI excluded). A docs-only or test-only PR → no suggestion,
-  left for the triager.
-- A **clear owner** must have written ≥50% of the blamed core lines
-  (`OWNER_SHARE_THRESHOLD`; loose gate per Edward — size-agnostic).
-- The owner must have **repeat history**: ≥`MIN_OWNER_COMMITS` (2)
-  distinct commits touching the changed files, so we name genuine area
-  experts, not someone who edited a line once incidentally.
-- Need ≥`MIN_BLAMED_LINES` (4) attributable lines — pure insertions blame
-  to nothing, so a PR that only *adds* code yields no signal.
-
-Key gotchas learned building this:
-- **Blame gives emails, not logins, and people commit under several
-  emails** (`@fb.com`, `@meta.com`, ghstack noise). Aggregate by resolved
-  GitHub login (`email → login` via a commit under that email +
-  `gh api .../commits/<sha> --jq .author.login`), not by raw email — else
-  the same person's lines split and no owner clears the threshold.
-- **`git log --author=<email>` under-counts** because the landed commit's
-  author email often differs from the `git config user.email`. Count
-  file-touching commits by matching the blame-derived email(s) in
-  `git log --format=%H\ %ae -- <path>` instead.
-- Requires a **local pytorch checkout** for blame/log
-  (`--pytorch-dir`, `$GREENDOG_PYTORCH_DIR`, default `~/Dev/pytorch`);
-  its `.git` is a worktree *file*, so probe with `git rev-parse
-  --is-inside-work-tree`, not `os.path.isdir(".git")`.
-
-`greendog suggest <n>` prints the suggestion (owner, share, lines,
-commits) as a dry-run; `--apply` adds them via `gh pr edit --add-reviewer`
-(skips if they're already a reviewer).
-
-#### Routing autorules (stage 1 of `suggest`)
-
-Some areas have a stable crew who want *everything* in the area sent to
-them, so no blame is needed. These live as a short table in
-`greendog/routes.py` (label / title-regex / path-regex → reviewers) and
-run as the first stage of `greendog suggest` (`suggest_by_rule`), ahead
-of blame. `greendog triage` calls the same entry point: a `needs_triage`
-PR that matches becomes verdict `route` and `--apply` adds the crew +
-`triaged`. Current rules (each is an Edward-confirmed decision):
-- **rocm** → `jeffdaily`, `jithunnair-amd` (CODEOWNERS crew). Matches
-  `module: rocm`, `ciflow/rocm*`, `[ROCm]`/rocm/hip/gfxNNN/miNNN in the
-  title, or rocm/hip/hipify/miopen paths. jeffdaily's merge rule only
-  covers `**rocm**`/`**hip**` paths, so a global approver co-signs the
-  merge. (2026-09-10, #195900)
-- **device-agnostic-tests** → `fffrog`. Title matches
-  `[Testcase Refactoring]` / `hw_classification`.
-Keep the table short and high-precision; add a rule only after confirming
-with Edward.
-
-#### Cross-functional campaign PRs → route to the campaign owner, not the module owner
-
-Some PRs belong to a coordinated, repo-wide effort rather than to one
-subsystem. The clearest current example is the **device-agnostic /
-accelerator-generalization test campaign** — titles like `[Testcase
-Refactoring] ...`, `Make <file> device-agnostic`, `Replace CUDA/XPU-only
-skips with generic accelerator checks`; changes that swap
-`TEST_MULTIGPU`→`TEST_MULTIACCELERATOR`, hardcoded `cuda` →
-`instantiate_device_type_tests` + injected `device`, to enable
-privateuse1/NPU/XPU backends. These are usually test-only, so `greendog
-suggest` declines them (no core-file owner) AND the per-file module owner
-(e.g. export→`angelayi`, fsdp→`weifengpy`) is the WRONG reviewer — they
-own the subsystem, not the xfn effort.
-
-The right reviewer is whoever drives the campaign across all files. For
-the accelerator-generalization effort that's **`fffrog`** (with the
-"Accelerator / PrivateUse1" `merge_rules` group: `guangyey`, `EikanWang`,
-`albanD` the core sponsor). How to identify the owner for a campaign:
-the PR body often @-pings them and/or references a foundational PR whose
-requested reviewers reveal the coordinator.
-
-Caveat: these test files usually don't match the campaign's merge-rule
-patterns, so the campaign owner can't necessarily *merge* via that rule —
-but they're still the correct *reviewer*; a global approver (`albanD`)
-or the module owner co-signs the actual merge. Resolution: add the
-campaign owner as reviewer, mark triaged.
-
-#### Liveness check: don't route to people who've left (commit-recency is primary)
-
-Blame/history-based suggestion routinely names the plurality author of the
-touched code — but that person may have LEFT. Before assigning a
-blame-derived reviewer, verify they're still around.
-
-**Cheapest reliable signal: repo permission.** `gh api
-repos/pytorch/pytorch/collaborators/<login>/permission` — people who
-leave Meta drop to `read` (seen 2026-09-10: XilunWu, colesbury,
-davidberard98, zhxchen17, mengluy), and `read` can't be requested as a
-reviewer anyway, so `greendog suggest` now skips them (`eligible=`).
-`write` doesn't prove *active* though (peterbell10, lezcano, fritzo still
-have it), so for a write-access candidate the next check is
-**recent commit activity under the person's Meta email**, NOT team
-membership. Check:
-`git log --since=<~90 days ago> --author='<email>' --oneline | wc -l`
-(and eyeball the latest commit date). Recent `@meta.com`/`@fb.com` commits
-⇒ still at Meta, full stop.
-
-The GitHub team **`pytorch/metamates`** (~690 members, fetched via
-`gh api orgs/pytorch/teams/metamates/members --paginate --jq '.[].login'`,
-the same team `merge_rules.yaml`'s "Metamates" `*` rule expands) is a
-useful *positive* confirmation — but it is NOT a complete Meta roster: it
-has **false negatives** (e.g. `ngimel` is a current, active Meta employee
-yet is not in the team). So absence from `metamates` does NOT mean
-departed.
-
-Decision rule by candidate commit email:
-- **Meta email (`@fb.com`/`@meta.com`)** → CURRENT if EITHER in `metamates`
-  OR has recent Meta-email commits. Conclude DEPARTED only when BOTH are
-  false (not in `metamates` AND ~0 commits in the last 90 days).
-- **External contributor (`@intel.com`/`@amd.com`/gmail/etc.)** →
-  `metamates` doesn't apply (e.g. `fffrog` is Intel, not a metamate but
-  very much active); judge them on their own recent activity / team.
-
-Fallback when the top blame owner is genuinely departed: pick the most
-recent *active* contributor on the SAME subsystem, optionally paired with
-a high-commit-volume adjacent engineer for responsiveness.
-
-**Implemented: the reviewer knowledgebase (`reviewers.json` +
-`greendog/reviewers.py`).** `greendog suggest` no longer gates blame
-candidates on write access alone; it asks the knowledgebase whether the
-person is *actively reviewing*. Per login it records observed GitHub
-activity — PRs reviewed in the last 90 days (`reviewed-by:` search),
-open review requests pending on them (load), commits in the window, repo
-permission — and derives `active` (≥1 review/90d — one at all is fine,
-Edward 2026-09-10), `cold` (has access, isn't reviewing; commits alone
-don't count) or `departed` (no write access). Records go stale after 14
-days and are re-observed lazily, each observation is appended to a
-per-login `history`, and the file is committed so the base accumulates
-across sessions. `suggest` prints the candidates it skipped and why.
-- **Overload is a judgment call, not a count.** ≥100 pending requests
-  flags OVERLOADED but never excludes. fffrog's queue is one PR-heavy
-  campaign of near-identical PRs → pinned `--overloaded no`. albanD is
-  genuinely overloaded → pinned `yes`, and should only be roped in on
-  his **revealed preference**: `greendog reviewers profile <login>`
-  buckets the directories of the last 100 PRs they reviewed; `suggest`
-  reports whether an overloaded candidate's profile covers the PR's core
-  files ("in their wheelhouse" vs "NOT in their recently-reviewed areas").
-- Overrides: `greendog reviewers set <login> [--status ...]
-  [--overloaded yes|no] [--note "..."]` (any subset; `--clear` removes);
-  `show|refresh [logins]` to inspect/update.
-- Search API budget is 30 calls/min (two per observation); refresh backs
-  off on rate limit and never persists a failed observation. There is
-  **no internal GitHub API proxy** (OSS team won't share bot tokens). The
-  internal mirror is Dev Infra's **ClickHouse** (HUD backend, webhook-fed
-  PR/issue/comment data; console via SSO at console.clickhouse.cloud,
-  programmatic creds from Huy Do / Catherine Lee; docs:
-  test-infra wiki "Querying-ClickHouse-database-for-fun-and-profit").
-  Review-*request* events may not be stored there; the Hive table
-  `aml.fct_pytorch_github_review_events` (devserver only) has them.
-  Wiring ClickHouse in as an alternate observer is future work.
-
-#### Double-check jansel-assigned reviewers
-
-jansel runs reviewer-assignment automation, and it picks plausible-but-
-wrong reviewers via naive signal — someone with a single tangential commit
-to the area, not the actual owner. When you find a PR whose only reviewer
-was requested by `jansel` (check the issue timeline
-`review_requested` actor), re-derive the owner yourself before trusting it.
-Blame the *feature* (`git log -S '<function/symbol>' -- <file>`), not just
-the changed line-region, since the line-region is often generic churn —
-the jansel-assigned reviewer may have exactly one tangential commit in
-the area while someone else authored the whole feature.
-
-### Triage sweeps: ALWAYS confirm before actioning
-
-Any sweep that edits PRs in bulk (adds reviewers, applies `triaged`, etc.)
-MUST be presented to the user in this terminal and confirmed BEFORE any
-mutation. Gather + classify + show the proposed actions (a table of
-PR → reviewer → action, ideally in confidence tiers), then wait for the
-user to approve/adjust scope. Never auto-apply a sweep's edits. (Standing
-instruction from Edward.)
-
-#### Sweep pattern A — device-agnostic test campaign → `fffrog`
-
-Scan the triage queue for `fffrog`-shaped PRs (see the campaign note
-above): test-only PRs making tests device-agnostic / adding PrivateUse1 /
-NPU / OOT-backend support, or swapping `torch.cuda`→`torch.accelerator`.
-Strong signal = `@fffrog` (and the campaign crew `wjlFlyer`/`FuDdd`/
-`JiasenTian`/`jishuangfeng`/`lyriexs666`/`pjyFight`/`JamesD18`) @-pinged in
-the PR body, or fffrog already a reviewer. Route to `fffrog` + triage.
-When scanning body @-mentions, DROP false pings that are actually code
-decorators (`@requires_gpu`, `@skipIfXpu`, `@unittest`,
-`@skip_if_lt_x_gpu`, `@requires_accelerator_dist_backend`, …) — match only
-real logins. Distinguish from *inductor-XPU enablement* PRs (edit core
-`torch/_inductor/**` or bump a triton-xpu submodule) which route to
-inductor-XPU owners (`guangyey`/`EikanWang`), not the test campaign.
-
-#### Sweep pattern B — human review-like engagement → assign the human + triage
-
-Sweep the queue for PRs carrying evidence of **human** review-like
-action — a real review state (CHANGES_REQUESTED / COMMENTED / APPROVED)
-or a substantive comment (design question/critique), by a non-author,
-non-bot human. Then add that human as reviewer (if missing) + triage.
-This is the same spirit as `greendog triage` criterion 1, done as a
-manual sweep.
-Disqualifications: all bots (`pytorch-bot`, `pytorchmergebot`,
-`pytorchbot`, `facebook-github-bot`, `claude`, `*bot`) AND **jansel** —
-his `@claude review these changes` are bot automation, NOT human
-engagement (per the jansel note above), so a jansel comment alone never
-qualifies a PR.
+- After making repository changes, stage relevant files and commit before
+  reporting back, unless told not to. Never commit generated artifacts,
+  caches, virtualenvs, credentials, or unrelated user changes.
+
+## CI analysis methodology
+
+1. **Pick one representative commit** with near-complete CI (90%+ of
+   per-commit jobs concluded), ~6h back from HEAD (HEAD has 1000+ pending
+   jobs). Don't aggregate failures across a window; that conflates current
+   redness with already-autoreverted regressions.
+2. **Per-commit jobs only** by default: `pull`, `trunk`, `Lint`. Exclude
+   `periodic`, `nightly`, `perf`, `slow`, `benchmark`. Some workflows look
+   per-commit but are cron+ciflow (e.g. `dynamo-unittest`,
+   `inductor-unittest`); check for `push: branches: [main]` in the workflow
+   YAML under `~/Dev/pytorch/.github/workflows/`.
+3. **Main shards first.** `mem_leak_check` and `rerun_disabled_tests`
+   variants are secondary signals.
+4. **Validate with the window.** Failing on one commit but green on
+   neighbors = flake; report only persistent failures or clear green→red
+   transitions.
+5. **Cross-reference HUD.** If the analysis disagrees with HUD, the
+   methodology is probably wrong.
+
+## Investigation rules of thumb
+
+- **Logs are ground truth.** Never conclude "TD skipped it" or "wrong
+  shard" without pulling the job log (`gh run view --job <id> --log`; use
+  `gh api repos/pytorch/pytorch/actions/jobs/<id>/logs` for logs >5k lines).
+  Check ALL shards.
+- **For autoreverts, first check HOW the PR merged** (`merge -i` / `-f`
+  land over red), then whether the landed commit equals the tested commit
+  (ghstack skew), then merge skew via the BASE_SHA window. Don't confuse the
+  autorevert confirmation run with the original trunk run.
+- Each test file runs twice per shard (`(serial)` then `(not serial)`); the
+  failure summary is at the end of the second run.
+- HUD's named test is often a fall guy: lazy `cpp_extension` lock hangs,
+  `test_metal_capture` SIGSEGV on m2-15, and `backwards_compat` meta-tests
+  all blame the wrong test. See `docs/ci-investigation.md` for tells.
+- `nogpu` periodic shards crash any GPU-touching test lacking
+  `@requires_gpu`.
+
+## OSS PR triage essentials
+
+Queue = open, non-draft PRs with `open source` but not `triaged`, not
+approved (query in `docs/pr-triage.md`). A PR is done (`mark_triaged`) when
+someone who can **actually merge it per `merge_rules.yaml`** (path-scoped,
+not a global write bit), who is not the author or a bot, has reviewed,
+commented, or is a requested reviewer at all (incl. CODEOWNERS). Add them
+as a reviewer if missing. Implemented deterministically as `greendog
+triage`; `greendog suggest <n>` names a reviewer from blame + the reviewer
+knowledgebase (`reviewers.json`); routing autorules live in
+`greendog/routes.py`.
+
+Hard rules:
+- **jansel's `@claude review ...` comments are bot automation, not
+  ownership.** Rando high-volume reviewers (e.g. `sylvesterkaczmarek`) are
+  agent spam, not engagement.
+- `mergedog`-labeled PRs are claimed; leave them alone.
+- Before assigning a blame-derived reviewer, check they're still active
+  (repo permission, recent commits, knowledgebase status).
+- Device-agnostic test-campaign PRs route to `fffrog`, not the module
+  owner. ROCm PRs route to `jeffdaily` + `jithunnair-amd`.
+- **Any bulk sweep MUST be shown to the user and confirmed before any
+  mutation.** Never auto-apply.
